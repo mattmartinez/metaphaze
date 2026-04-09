@@ -169,15 +169,40 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
     Ok(())
 }
 
-/// Parse tracks and steps from plan output, write plan files to disk, return track entries.
-fn parse_and_write_tracks(phase_id: &str, plan_output: &str) -> Result<Vec<state::TrackEntry>> {
-    let track_re = Regex::new(r"(?m)^## (TR\d+)\s*[—-]\s*(.+)$")?;
-    let step_re = Regex::new(r"(?m)^### (ST\d+)\s*[—-]\s*(.+)$")?;
-    let dep_re = Regex::new(r"TR(\d+)\s+depends on\s+TR(\d+)")?;
+/// A parsed step with its raw content (before filesystem writes).
+pub(crate) struct ParsedStep {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+}
+
+/// A parsed track with its raw content and steps (before filesystem writes).
+pub(crate) struct ParsedTrack {
+    pub id: String,
+    pub title: String,
+    pub depends_on: Vec<String>,
+    pub content: String,
+    pub steps: Vec<ParsedStep>,
+}
+
+/// Pure parsing: extract tracks and steps from plan text without touching the filesystem.
+pub(crate) fn parse_plan(plan_text: &str) -> Vec<ParsedTrack> {
+    let track_re = match Regex::new(r"(?m)^## (TR\d+)\s*[—-]\s*(.+)$") {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+    let step_re = match Regex::new(r"(?m)^### (ST\d+)\s*[—-]\s*(.+)$") {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+    let dep_re = match Regex::new(r"TR(\d+)\s+depends on\s+TR(\d+)") {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
 
     // Extract the preamble (content before the first ## TR header) for dependency parsing
-    let first_track_pos = track_re.find(plan_output).map(|m| m.start()).unwrap_or(0);
-    let preamble = &plan_output[..first_track_pos];
+    let first_track_pos = track_re.find(plan_text).map(|m| m.start()).unwrap_or(0);
+    let preamble = &plan_text[..first_track_pos];
 
     // Build a map of track_id -> depends_on from the preamble
     let mut dep_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
@@ -188,10 +213,13 @@ fn parse_and_write_tracks(phase_id: &str, plan_output: &str) -> Result<Vec<state
     }
 
     let mut tracks = vec![];
-    let track_matches: Vec<_> = track_re.find_iter(plan_output).collect();
+    let track_matches: Vec<_> = track_re.find_iter(plan_text).collect();
 
     for (i, track_match) in track_matches.iter().enumerate() {
-        let caps = track_re.captures(track_match.as_str()).unwrap();
+        let caps = match track_re.captures(track_match.as_str()) {
+            Some(c) => c,
+            None => continue,
+        };
         let track_id = caps[1].to_string();
         let track_title = caps[2].trim().to_string();
 
@@ -199,27 +227,27 @@ fn parse_and_write_tracks(phase_id: &str, plan_output: &str) -> Result<Vec<state
         let track_end = if i + 1 < track_matches.len() {
             track_matches[i + 1].start()
         } else {
-            plan_output.len()
+            plan_text.len()
         };
-        let track_content = &plan_output[track_start..track_end];
-
-        let track_dir = state::track_dir(phase_id, &track_id);
-        let steps_dir = track_dir.join("steps");
-        fs::create_dir_all(&steps_dir)?;
+        let track_content = &plan_text[track_start..track_end];
 
         let depends_on = dep_map.remove(&track_id).unwrap_or_default();
 
-        let mut track_entry = state::TrackEntry {
-            id: track_id.clone(),
-            title: track_title.clone(),
-            steps: vec![],
+        let mut parsed_track = ParsedTrack {
+            id: track_id,
+            title: track_title,
             depends_on,
+            content: track_content.trim().to_string(),
+            steps: vec![],
         };
 
         let step_matches: Vec<_> = step_re.find_iter(track_content).collect();
 
         for (j, step_match) in step_matches.iter().enumerate() {
-            let scaps = step_re.captures(step_match.as_str()).unwrap();
+            let scaps = match step_re.captures(step_match.as_str()) {
+                Some(c) => c,
+                None => continue,
+            };
             let step_id = scaps[1].to_string();
             let step_title = scaps[2].trim().to_string();
 
@@ -231,23 +259,204 @@ fn parse_and_write_tracks(phase_id: &str, plan_output: &str) -> Result<Vec<state
             };
             let step_content = &track_content[step_start..step_end];
 
-            let plan_path = state::step_plan_path(phase_id, &track_id, &step_id);
-            fs::write(&plan_path, step_content.trim())?;
-
-            track_entry.steps.push(state::StepEntry {
+            parsed_track.steps.push(ParsedStep {
                 id: step_id,
                 title: step_title,
+                content: step_content.trim().to_string(),
+            });
+        }
+
+        tracks.push(parsed_track);
+    }
+
+    tracks
+}
+
+/// Parse tracks and steps from plan output, write plan files to disk, return track entries.
+fn parse_and_write_tracks(phase_id: &str, plan_output: &str) -> Result<Vec<state::TrackEntry>> {
+    let parsed_tracks = parse_plan(plan_output);
+    let mut track_entries = vec![];
+
+    for parsed_track in parsed_tracks {
+        let track_dir = state::track_dir(phase_id, &parsed_track.id);
+        let steps_dir = track_dir.join("steps");
+        fs::create_dir_all(&steps_dir)?;
+
+        let mut track_entry = state::TrackEntry {
+            id: parsed_track.id.clone(),
+            title: parsed_track.title.clone(),
+            steps: vec![],
+            depends_on: parsed_track.depends_on,
+        };
+
+        for parsed_step in &parsed_track.steps {
+            let plan_path = state::step_plan_path(phase_id, &parsed_track.id, &parsed_step.id);
+            fs::write(&plan_path, &parsed_step.content)?;
+
+            track_entry.steps.push(state::StepEntry {
+                id: parsed_step.id.clone(),
+                title: parsed_step.title.clone(),
                 status: state::StepStatus::Pending,
                 blocked_reason: None,
                 attempts: 0,
             });
         }
 
-        fs::write(track_dir.join("PLAN.md"), track_content.trim())?;
-        tracks.push(track_entry);
+        fs::write(track_dir.join("PLAN.md"), &parsed_track.content)?;
+        track_entries.push(track_entry);
     }
 
-    Ok(tracks)
+    Ok(track_entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_single_track() {
+        let plan = "\
+## TR01 — State Management
+
+### ST01 — Initialize state file
+
+Set up the initial state.rs module.
+
+### ST02 — Add persistence
+
+Write state to disk.
+";
+        let tracks = parse_plan(plan);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].id, "TR01");
+        assert_eq!(tracks[0].title, "State Management");
+        assert_eq!(tracks[0].steps.len(), 2);
+        assert_eq!(tracks[0].steps[0].id, "ST01");
+        assert_eq!(tracks[0].steps[0].title, "Initialize state file");
+        assert_eq!(tracks[0].steps[1].id, "ST02");
+        assert_eq!(tracks[0].steps[1].title, "Add persistence");
+    }
+
+    #[test]
+    fn test_parse_multi_track() {
+        let plan = "\
+## TR01 — Foundation
+
+### ST01 — Bootstrap project
+
+Create Cargo.toml and main.rs.
+
+## TR02 — CLI
+
+### ST01 — Add clap
+
+Wire up argument parsing.
+
+### ST02 — Add subcommands
+
+Implement next and auto.
+
+## TR03 — Testing
+
+### ST01 — Unit tests
+
+Write tests for state machine.
+";
+        let tracks = parse_plan(plan);
+        assert_eq!(tracks.len(), 3);
+        assert_eq!(tracks[0].id, "TR01");
+        assert_eq!(tracks[0].steps.len(), 1);
+        assert_eq!(tracks[1].id, "TR02");
+        assert_eq!(tracks[1].steps.len(), 2);
+        assert_eq!(tracks[2].id, "TR03");
+        assert_eq!(tracks[2].steps.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_dependencies() {
+        let plan = "\
+## Dependencies Between Tracks
+
+TR02 depends on TR01
+TR03 depends on TR01
+
+## TR01 — Foundation
+
+### ST01 — Bootstrap
+
+Initial setup.
+
+## TR02 — CLI
+
+### ST01 — Add CLI
+
+Argument parsing.
+
+## TR03 — Testing
+
+### ST01 — Tests
+
+Write tests.
+";
+        let tracks = parse_plan(plan);
+        assert_eq!(tracks.len(), 3);
+
+        let tr01 = tracks.iter().find(|t| t.id == "TR01").unwrap();
+        assert!(tr01.depends_on.is_empty());
+
+        let tr02 = tracks.iter().find(|t| t.id == "TR02").unwrap();
+        assert_eq!(tr02.depends_on, vec!["TR01"]);
+
+        let tr03 = tracks.iter().find(|t| t.id == "TR03").unwrap();
+        assert_eq!(tr03.depends_on, vec!["TR01"]);
+    }
+
+    #[test]
+    fn test_parse_empty_plan() {
+        let tracks = parse_plan("");
+        assert!(tracks.is_empty());
+
+        let tracks = parse_plan("# Some preamble\n\nNo tracks here.\n");
+        assert!(tracks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_step_content() {
+        let plan = "\
+## TR01 — State Machine
+
+### ST01 — Initialize state
+
+**Must-haves:**
+- state.rs exists
+- ProjectState serializes to YAML
+
+**Action:**
+Create src/state.rs with the ProjectState struct.
+
+### ST02 — Add transitions
+
+**Must-haves:**
+- mark_complete works
+- status reflects change
+
+**Action:**
+Implement mark_complete on ProjectState.
+";
+        let tracks = parse_plan(plan);
+        assert_eq!(tracks.len(), 1);
+        let track = &tracks[0];
+        assert_eq!(track.steps.len(), 2);
+
+        let st01 = &track.steps[0];
+        assert!(st01.content.contains("Must-haves"));
+        assert!(st01.content.contains("state.rs exists"));
+        assert!(st01.content.contains("Create src/state.rs"));
+
+        let st02 = &track.steps[1];
+        assert!(st02.content.contains("mark_complete works"));
+        assert!(st02.content.contains("Implement mark_complete"));
+    }
 }
 
 fn parse_and_create_steps(

@@ -8,6 +8,11 @@ use std::path::PathBuf;
 
 const MZ_DIR: &str = ".mz";
 
+#[cfg(test)]
+thread_local! {
+    static TEST_MZ_DIR: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepEntry {
     pub id: String,
@@ -143,6 +148,13 @@ impl ProjectState {
 }
 
 fn mz_dir() -> PathBuf {
+    #[cfg(test)]
+    {
+        let override_path = TEST_MZ_DIR.with(|d| d.borrow().clone());
+        if let Some(path) = override_path {
+            return path;
+        }
+    }
     PathBuf::from(MZ_DIR)
 }
 
@@ -675,6 +687,252 @@ pub fn collect_dependency_summaries(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// RAII guard: sets the thread-local mz dir override for the duration of the test,
+    /// then clears it on drop.
+    struct TempMz {
+        _dir: TempDir,
+    }
+
+    impl TempMz {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let mz_path = dir.path().join(".mz");
+            fs::create_dir_all(&mz_path).unwrap();
+            TEST_MZ_DIR.with(|d| *d.borrow_mut() = Some(mz_path));
+            TempMz { _dir: dir }
+        }
+    }
+
+    impl Drop for TempMz {
+        fn drop(&mut self) {
+            TEST_MZ_DIR.with(|d| *d.borrow_mut() = None);
+        }
+    }
+
+    fn make_state() -> ProjectState {
+        ProjectState {
+            name: "test".to_string(),
+            description: "test project".to_string(),
+            current_phase: "P001".to_string(),
+            phases: vec![PhaseEntry {
+                id: "P001".to_string(),
+                title: "Phase 1".to_string(),
+                tracks: vec![
+                    TrackEntry {
+                        id: "TR01".to_string(),
+                        title: "Track 1".to_string(),
+                        depends_on: vec![],
+                        steps: vec![
+                            StepEntry {
+                                id: "ST01".to_string(),
+                                title: "Step 1".to_string(),
+                                status: StepStatus::Complete,
+                                blocked_reason: None,
+                                attempts: 0,
+                            },
+                            StepEntry {
+                                id: "ST02".to_string(),
+                                title: "Step 2".to_string(),
+                                status: StepStatus::Pending,
+                                blocked_reason: None,
+                                attempts: 0,
+                            },
+                        ],
+                    },
+                    TrackEntry {
+                        id: "TR02".to_string(),
+                        title: "Track 2".to_string(),
+                        depends_on: vec![],
+                        steps: vec![StepEntry {
+                            id: "ST01".to_string(),
+                            title: "Step 1".to_string(),
+                            status: StepStatus::Blocked,
+                            blocked_reason: Some("reason".to_string()),
+                            attempts: 1,
+                        }],
+                    },
+                ],
+            }],
+        }
+    }
+
+    #[test]
+    fn test_path_helpers() {
+        // These are pure path computations — no filesystem needed.
+        let phase = phase_dir("P001");
+        assert!(phase.ends_with("P001"));
+        assert!(phase.to_string_lossy().contains("phases"));
+
+        let track = track_dir("P001", "TR01");
+        assert!(track.to_string_lossy().contains("P001"));
+        assert!(track.to_string_lossy().contains("TR01"));
+        assert!(track.to_string_lossy().contains("tracks"));
+
+        let plan = step_plan_path("P001", "TR01", "ST01");
+        assert!(plan.to_string_lossy().contains("ST01-PLAN.md"));
+        assert!(plan.to_string_lossy().contains("steps"));
+
+        let summary = step_summary_path("P001", "TR01", "ST01");
+        assert!(summary.to_string_lossy().contains("ST01-SUMMARY.md"));
+        assert!(summary.to_string_lossy().contains("steps"));
+
+        // mz_dir() is the root of all paths
+        let mz = mz_dir();
+        assert!(phase.starts_with(&mz));
+        assert!(track.starts_with(&mz));
+        assert!(plan.starts_with(&mz));
+        assert!(summary.starts_with(&mz));
+    }
+
+    #[test]
+    fn test_step_status_serde() {
+        for (status, expected) in &[
+            (StepStatus::Pending, "pending"),
+            (StepStatus::InProgress, "inprogress"),
+            (StepStatus::Complete, "complete"),
+            (StepStatus::Blocked, "blocked"),
+        ] {
+            let yaml = serde_yaml::to_string(status).unwrap();
+            assert!(yaml.trim() == *expected, "expected '{expected}', got '{}'", yaml.trim());
+            let back: StepStatus = serde_yaml::from_str(&yaml).unwrap();
+            assert_eq!(&back, status);
+        }
+    }
+
+    #[test]
+    fn test_next_pending_step_ordering() {
+        // in_progress before pending
+        let mut state = make_state();
+        // Set TR01/ST02 to InProgress
+        state.phases[0].tracks[0].steps[1].status = StepStatus::InProgress;
+
+        let next = state.next_pending_step();
+        assert_eq!(next, Some(("P001".into(), "TR01".into(), "ST02".into())));
+
+        // Now clear in_progress — should return first pending
+        state.phases[0].tracks[0].steps[1].status = StepStatus::Pending;
+        let next = state.next_pending_step();
+        assert_eq!(next, Some(("P001".into(), "TR01".into(), "ST02".into())));
+    }
+
+    #[test]
+    fn test_next_pending_step_empty() {
+        let mut state = make_state();
+        // Mark all steps complete
+        for track in &mut state.phases[0].tracks {
+            for step in &mut track.steps {
+                step.status = StepStatus::Complete;
+                step.blocked_reason = None;
+            }
+        }
+        assert_eq!(state.next_pending_step(), None);
+    }
+
+    #[test]
+    fn test_is_track_complete() {
+        let mut state = make_state();
+
+        // TR01 has one complete and one pending — not complete
+        assert!(!state.is_track_complete("P001", "TR01"));
+
+        // Mark TR01/ST02 complete
+        state.phases[0].tracks[0].steps[1].status = StepStatus::Complete;
+        assert!(state.is_track_complete("P001", "TR01"));
+
+        // TR02 has one blocked step — not complete
+        assert!(!state.is_track_complete("P001", "TR02"));
+
+        // Non-existent track returns false
+        assert!(!state.is_track_complete("P001", "TR99"));
+    }
+
+    #[test]
+    fn test_stats() {
+        let state = make_state();
+        // TR01: ST01=complete, ST02=pending
+        // TR02: ST01=blocked
+        // total=3, done=1, in_progress=0, blocked=1
+        let (total, done, in_progress, blocked) = state.stats();
+        assert_eq!(total, 3);
+        assert_eq!(done, 1);
+        assert_eq!(in_progress, 0);
+        assert_eq!(blocked, 1);
+    }
+
+    #[test]
+    fn test_mark_step_transitions() {
+        let _tmp = TempMz::new();
+
+        // Save initial state
+        let state = make_state();
+        save(&state).unwrap();
+
+        // pending → in_progress
+        mark_step_in_progress("P001", "TR01", "ST02").unwrap();
+        let s = load().unwrap();
+        let step = &s.phases[0].tracks[0].steps[1];
+        assert_eq!(step.status, StepStatus::InProgress);
+
+        // in_progress → complete
+        mark_step_complete("P001", "TR01", "ST02").unwrap();
+        let s = load().unwrap();
+        let step = &s.phases[0].tracks[0].steps[1];
+        assert_eq!(step.status, StepStatus::Complete);
+        assert_eq!(step.blocked_reason, None);
+
+        // pending → blocked with reason
+        mark_step_in_progress("P001", "TR01", "ST02").unwrap(); // reset to in_progress first
+        // Actually mark fresh step as blocked
+        let mut s = load().unwrap();
+        s.phases[0].tracks[0].steps[1].status = StepStatus::Pending;
+        s.phases[0].tracks[0].steps[1].blocked_reason = None;
+        save(&s).unwrap();
+
+        mark_step_blocked("P001", "TR01", "ST02", "verification failed").unwrap();
+        let s = load().unwrap();
+        let step = &s.phases[0].tracks[0].steps[1];
+        assert_eq!(step.status, StepStatus::Blocked);
+        assert_eq!(step.blocked_reason.as_deref(), Some("verification failed"));
+    }
+
+    #[test]
+    fn test_reset_step() {
+        let _tmp = TempMz::new();
+
+        let mut state = make_state();
+        // Give TR01/ST01 a blocked reason to ensure reset clears it
+        state.phases[0].tracks[0].steps[0].status = StepStatus::Blocked;
+        state.phases[0].tracks[0].steps[0].blocked_reason = Some("broken".to_string());
+        state.phases[0].tracks[0].steps[0].attempts = 3;
+        save(&state).unwrap();
+
+        // Reset with track prefix
+        reset_step("P001", "TR01/ST01").unwrap();
+        let s = load().unwrap();
+        let step = &s.phases[0].tracks[0].steps[0];
+        assert_eq!(step.status, StepStatus::Pending);
+        assert_eq!(step.blocked_reason, None);
+        assert_eq!(step.attempts, 0);
+
+        // Reset without track prefix (bare step id, finds first match)
+        let mut s = load().unwrap();
+        s.phases[0].tracks[0].steps[1].status = StepStatus::Blocked;
+        s.phases[0].tracks[0].steps[1].blocked_reason = Some("other".to_string());
+        save(&s).unwrap();
+
+        reset_step("P001", "ST02").unwrap();
+        let s = load().unwrap();
+        let step = &s.phases[0].tracks[0].steps[1];
+        assert_eq!(step.status, StepStatus::Pending);
+        assert_eq!(step.blocked_reason, None);
+    }
 }
 
 pub fn print_status(state: &ProjectState, detail: bool) -> Result<()> {
