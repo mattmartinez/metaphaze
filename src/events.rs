@@ -8,6 +8,10 @@ pub enum ProgressEvent {
     StepFailed { track_id: String },
     TrackCompleted { track_id: String },
     ClaudeOutput { line: String },
+    AssistantText { text: String },
+    ToolUseStarted { tool: String },
+    ToolResultReceived { tool: String },
+    PhaseLabel { label: String },
     ExecutionFinished { completed: usize, blocked: usize },
 }
 

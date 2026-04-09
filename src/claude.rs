@@ -120,24 +120,22 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                             .join("");
                         if !text.is_empty() {
                             if let Some(tx) = sender {
-                                let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: text.clone() });
+                                let _ = tx.send(crate::events::ProgressEvent::AssistantText { text: text.clone() });
                             } else {
                                 eprintln!("  {}", text.dimmed());
                             }
                         }
                     }
                     Some(StreamEvent::ToolUse { tool, .. }) => {
-                        let msg = format!("🔧 {}", tool);
                         if let Some(tx) = sender {
-                            let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: msg.clone() });
+                            let _ = tx.send(crate::events::ProgressEvent::ToolUseStarted { tool: tool.clone() });
                         } else {
-                            eprintln!("  {}", msg.dimmed());
+                            eprintln!("  {}", format!("🔧 {}", tool).cyan());
                         }
                     }
                     Some(StreamEvent::ToolResult { tool, .. }) => {
-                        let msg = format!("  ✓ {}", tool);
                         if let Some(tx) = sender {
-                            let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: msg });
+                            let _ = tx.send(crate::events::ProgressEvent::ToolResultReceived { tool });
                         }
                         // Skip stderr — too noisy for non-TUI path
                     }

@@ -14,9 +14,9 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph},
+    widgets::{Block, Borders, Gauge, Paragraph, Wrap},
     Terminal,
 };
 
@@ -71,10 +71,19 @@ pub struct StepInfo {
 
 const MAX_OUTPUT_LINES: usize = 1000;
 
+#[derive(Debug, Clone)]
+pub enum OutputLine {
+    Plain(String),
+    Assistant(String),
+    ToolUse(String),
+    ToolResult(String),
+    Label(String),
+}
+
 pub struct DashboardState {
     pub tracks: Vec<TrackInfo>,
     pub current_step: Option<StepInfo>,
-    pub output_lines: Vec<String>,
+    pub output_lines: Vec<OutputLine>,
     pub finished: Option<(usize, usize)>,
     pub scroll_offset: u16,
     pub user_scrolled: bool,
@@ -177,7 +186,35 @@ impl DashboardState {
             }
 
             ProgressEvent::ClaudeOutput { line } => {
-                self.output_lines.push(line);
+                self.output_lines.push(OutputLine::Plain(line));
+                if self.output_lines.len() > MAX_OUTPUT_LINES {
+                    self.output_lines.remove(0);
+                }
+            }
+
+            ProgressEvent::AssistantText { text } => {
+                self.output_lines.push(OutputLine::Assistant(text));
+                if self.output_lines.len() > MAX_OUTPUT_LINES {
+                    self.output_lines.remove(0);
+                }
+            }
+
+            ProgressEvent::ToolUseStarted { tool } => {
+                self.output_lines.push(OutputLine::ToolUse(tool));
+                if self.output_lines.len() > MAX_OUTPUT_LINES {
+                    self.output_lines.remove(0);
+                }
+            }
+
+            ProgressEvent::ToolResultReceived { tool } => {
+                self.output_lines.push(OutputLine::ToolResult(tool));
+                if self.output_lines.len() > MAX_OUTPUT_LINES {
+                    self.output_lines.remove(0);
+                }
+            }
+
+            ProgressEvent::PhaseLabel { label } => {
+                self.output_lines.push(OutputLine::Label(label));
                 if self.output_lines.len() > MAX_OUTPUT_LINES {
                     self.output_lines.remove(0);
                 }
@@ -554,10 +591,31 @@ impl App {
                 let output_lines: Vec<Line> = dashboard
                     .output_lines
                     .iter()
-                    .map(|l| Line::from(l.as_str()))
+                    .map(|l| match l {
+                        OutputLine::Plain(s) => Line::from(Span::raw(s.clone())),
+                        OutputLine::Assistant(s) => Line::from(Span::styled(
+                            s.clone(),
+                            Style::default().fg(Color::White),
+                        )),
+                        OutputLine::ToolUse(s) => Line::from(Span::styled(
+                            format!("🔧 {}", s),
+                            Style::default().fg(Color::Cyan),
+                        )),
+                        OutputLine::ToolResult(s) => Line::from(Span::styled(
+                            format!("  ✓ {}", s),
+                            Style::default().fg(Color::DarkGray),
+                        )),
+                        OutputLine::Label(s) => Line::from(Span::styled(
+                            s.clone(),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                    })
                     .collect();
                 let output_para = Paragraph::new(output_lines)
                     .block(output_block)
+                    .wrap(Wrap { trim: true })
                     .scroll((dashboard.scroll_offset, 0));
                 frame.render_widget(output_para, chunks[2]);
             }
