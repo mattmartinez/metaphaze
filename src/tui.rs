@@ -823,3 +823,68 @@ impl Drop for App {
         let _ = self.restore();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_dashboard() -> DashboardState {
+        DashboardState {
+            phase_id: "test".into(),
+            tracks: vec![],
+            current_step: None,
+            output_lines: VecDeque::new(),
+            finished: None,
+            scroll_offset: 0,
+            user_scrolled: false,
+            track_scroll_offset: 0,
+            partial_line: String::new(),
+            has_partial: false,
+            model: None,
+            start_time: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn test_token_streaming_accumulation() {
+        let mut d = make_dashboard();
+        d.update(ProgressEvent::TokenDelta { text: "Hello ".into() });
+        d.update(ProgressEvent::TokenDelta { text: "world\n".into() });
+        d.update(ProgressEvent::TokenDelta { text: "Line 2".into() });
+
+        assert_eq!(d.output_lines.len(), 2);
+        assert!(matches!(&d.output_lines[0], OutputLine::Assistant(s) if s == "Hello world"));
+        assert!(matches!(&d.output_lines[1], OutputLine::Assistant(s) if s == "Line 2"));
+        assert!(d.has_partial);
+    }
+
+    #[test]
+    fn test_tool_use_then_result_pairing() {
+        let mut d = make_dashboard();
+        d.update(ProgressEvent::ToolUseStarted { tool: "Read src/main.rs".into() });
+        d.update(ProgressEvent::ToolResultReceived { tool: "Read src/main.rs".into() });
+
+        assert_eq!(d.output_lines.len(), 2);
+        assert!(matches!(&d.output_lines[0], OutputLine::ToolUse(s) if s == "Read src/main.rs"));
+        assert!(matches!(&d.output_lines[1], OutputLine::ToolResult(s) if s == "Read src/main.rs"));
+    }
+
+    #[test]
+    fn test_model_detected() {
+        let mut d = make_dashboard();
+        d.update(ProgressEvent::ModelDetected { model: "claude-sonnet-4-20250514".into() });
+        assert_eq!(d.model, Some("claude-sonnet-4-20250514".into()));
+    }
+
+    #[test]
+    fn test_partial_line_flush_on_non_delta_event() {
+        let mut d = make_dashboard();
+        d.update(ProgressEvent::TokenDelta { text: "partial".into() });
+        d.update(ProgressEvent::ToolUseStarted { tool: "Bash ls".into() });
+
+        assert!(!d.has_partial);
+        assert_eq!(d.output_lines.len(), 2);
+        assert!(matches!(&d.output_lines[0], OutputLine::Assistant(s) if s == "partial"));
+        assert!(matches!(&d.output_lines[1], OutputLine::ToolUse(s) if s == "Bash ls"));
+    }
+}
