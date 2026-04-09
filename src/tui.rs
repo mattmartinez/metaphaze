@@ -1,4 +1,8 @@
 use std::io::{self, IsTerminal, Stdout};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -18,6 +22,25 @@ use ratatui::{
 
 use crate::events::{EventReceiver, EventSender, ProgressEvent};
 use crate::state::{ProjectState, StepStatus};
+
+// ── Panel ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Panel {
+    Tracks,
+    Progress,
+    Output,
+}
+
+impl Panel {
+    fn next(&self) -> Panel {
+        match self {
+            Panel::Tracks => Panel::Progress,
+            Panel::Progress => Panel::Output,
+            Panel::Output => Panel::Tracks,
+        }
+    }
+}
 
 // ── DashboardState ────────────────────────────────────────────────────────────
 
@@ -57,7 +80,8 @@ pub struct DashboardState {
     pub output_lines: Vec<String>,
     pub finished: Option<(usize, usize)>,
     pub scroll_offset: u16,
-    pub auto_scroll: bool,
+    pub user_scrolled: bool,
+    pub track_scroll_offset: u16,
 }
 
 impl DashboardState {
@@ -108,7 +132,8 @@ impl DashboardState {
             output_lines: Vec::new(),
             finished: None,
             scroll_offset: 0,
-            auto_scroll: true,
+            user_scrolled: false,
+            track_scroll_offset: 0,
         }
     }
 
@@ -188,10 +213,18 @@ pub struct App {
     pub running: bool,
     restored: bool,
     pub dashboard: DashboardState,
+    pub focused_panel: Panel,
     receiver: Option<EventReceiver>,
+    pub stop_signal: Arc<AtomicBool>,
+    pub paused: Arc<AtomicBool>,
 }
 
-pub fn init(dashboard: DashboardState, receiver: EventReceiver) -> Result<App> {
+pub fn init(
+    dashboard: DashboardState,
+    receiver: EventReceiver,
+    stop_signal: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+) -> Result<App> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -202,7 +235,10 @@ pub fn init(dashboard: DashboardState, receiver: EventReceiver) -> Result<App> {
         running: true,
         restored: false,
         dashboard,
+        focused_panel: Panel::Output,
         receiver: Some(receiver),
+        stop_signal,
+        paused,
     })
 }
 
@@ -212,13 +248,21 @@ pub fn is_interactive() -> bool {
 
 pub fn run_with_tui<F>(project_state: ProjectState, task: F) -> Result<()>
 where
-    F: FnOnce(Option<EventSender>) -> Result<()> + Send + 'static,
+    F: Fn(Option<EventSender>, Arc<AtomicBool>, Arc<AtomicBool>) -> Result<()> + Send + Sync + 'static,
 {
+    let task = Arc::new(task);
+    let phase_id = project_state.current_phase().to_string();
+
     let (tx, rx) = crate::events::channel();
     let dashboard = DashboardState::from_project_state(&project_state);
-    let mut app = init(dashboard, rx)?;
+    let stop_signal = Arc::new(AtomicBool::new(false));
+    let paused = Arc::new(AtomicBool::new(false));
+    let mut app = init(dashboard, rx, Arc::clone(&stop_signal), Arc::clone(&paused))?;
 
-    let handle = std::thread::spawn(move || task(Some(tx)));
+    let task_clone = Arc::clone(&task);
+    let stop_for_thread = Arc::clone(&stop_signal);
+    let paused_for_thread = Arc::clone(&paused);
+    let mut handle = std::thread::spawn(move || task_clone(Some(tx), stop_for_thread, paused_for_thread));
 
     loop {
         // Drain pending events
@@ -231,20 +275,70 @@ where
         if event::poll(Duration::from_millis(100))? {
             if let event::Event::Key(key) = event::read()? {
                 match key.code {
-                    KeyCode::Char('q') => app.running = false,
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        app.dashboard.auto_scroll = false;
-                        app.dashboard.scroll_offset =
-                            app.dashboard.scroll_offset.saturating_add(1);
+                    KeyCode::Char('q') => {
+                        app.running = false;
+                        app.stop_signal.store(true, Ordering::Relaxed);
                     }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        app.dashboard.auto_scroll = false;
-                        app.dashboard.scroll_offset =
-                            app.dashboard.scroll_offset.saturating_sub(1);
+                    KeyCode::Char('p') => {
+                        // Only pause while execution is running (not finished)
+                        if app.dashboard.finished.is_none() {
+                            app.paused.store(true, Ordering::Relaxed);
+                        }
                     }
-                    KeyCode::Char('G') => {
-                        app.dashboard.auto_scroll = true;
+                    KeyCode::Char('r') => {
+                        match app.dashboard.finished {
+                            Some((_, blocked)) if blocked > 0 => {
+                                // Reset blocked steps and restart execution
+                                let _ = crate::state::reset_blocked_steps(&phase_id);
+
+                                let (new_tx, new_rx) = crate::events::channel();
+                                app.receiver = Some(new_rx);
+                                app.dashboard.finished = None;
+
+                                let new_stop = Arc::new(AtomicBool::new(false));
+                                app.stop_signal = Arc::clone(&new_stop);
+
+                                let new_paused = Arc::new(AtomicBool::new(false));
+                                app.paused = Arc::clone(&new_paused);
+
+                                let task_retry = Arc::clone(&task);
+                                handle = std::thread::spawn(move || {
+                                    task_retry(Some(new_tx), new_stop, new_paused)
+                                });
+                            }
+                            _ => {
+                                // Resume from pause (works when running or finished-complete)
+                                app.paused.store(false, Ordering::Relaxed);
+                            }
+                        }
                     }
+                    KeyCode::Tab => {
+                        app.focused_panel = app.focused_panel.next();
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => match app.focused_panel {
+                        Panel::Output => {
+                            app.dashboard.user_scrolled = true;
+                            app.dashboard.scroll_offset =
+                                app.dashboard.scroll_offset.saturating_add(1);
+                        }
+                        Panel::Tracks => {
+                            app.dashboard.track_scroll_offset =
+                                app.dashboard.track_scroll_offset.saturating_add(1);
+                        }
+                        Panel::Progress => {}
+                    },
+                    KeyCode::Char('k') | KeyCode::Up => match app.focused_panel {
+                        Panel::Output => {
+                            app.dashboard.user_scrolled = true;
+                            app.dashboard.scroll_offset =
+                                app.dashboard.scroll_offset.saturating_sub(1);
+                        }
+                        Panel::Tracks => {
+                            app.dashboard.track_scroll_offset =
+                                app.dashboard.track_scroll_offset.saturating_sub(1);
+                        }
+                        Panel::Progress => {}
+                    },
                     _ => {}
                 }
             }
@@ -277,8 +371,7 @@ impl App {
     }
 
     pub fn draw(&mut self) -> Result<()> {
-        // Pre-compute auto-scroll offset using terminal size so we can update it
-        // before borrowing dashboard immutably for the render closure.
+        // Pre-compute scroll offsets using terminal size.
         {
             let term_size = self.terminal.size()?;
             let track_height = (self.dashboard.tracks.len() as u16 + 2).max(4);
@@ -289,27 +382,48 @@ impl App {
                 .saturating_sub(track_height)
                 .saturating_sub(middle_height)
                 .saturating_sub(2);
-            if self.dashboard.auto_scroll {
-                let total = self.dashboard.output_lines.len() as u16;
-                self.dashboard.scroll_offset = total.saturating_sub(output_inner_height);
+
+            let total = self.dashboard.output_lines.len() as u16;
+            let max_scroll = total.saturating_sub(output_inner_height);
+
+            if !self.dashboard.user_scrolled {
+                // Auto-scroll to bottom
+                self.dashboard.scroll_offset = max_scroll;
+            } else if self.dashboard.scroll_offset >= max_scroll {
+                // User scrolled back to bottom — re-enable auto-scroll
+                self.dashboard.user_scrolled = false;
+                self.dashboard.scroll_offset = max_scroll;
             }
         }
 
         let dashboard = &self.dashboard;
         let tracks: Vec<_> = dashboard.tracks.iter().collect();
         let finished = dashboard.finished;
+        let focused = &self.focused_panel;
+        let is_paused = self.paused.load(Ordering::Relaxed);
 
         self.terminal.draw(|frame| {
             let area = frame.area();
 
-            // Three vertical chunks: top=track overview, middle=step progress, bottom=output
+            // Four vertical chunks: top=track overview, middle=step progress, bottom=output, footer=status
             let track_height = (tracks.len() as u16 + 2).max(4); // borders + content
+            let footer_height = if finished.is_some() { 1u16 } else { 0u16 };
             let chunks = Layout::vertical([
                 Constraint::Length(track_height),
                 Constraint::Length(4),
                 Constraint::Min(5),
+                Constraint::Length(footer_height),
             ])
             .split(area);
+
+            // Helper: border style based on focus
+            let border_style = |panel: &Panel| -> Style {
+                if panel == focused {
+                    Style::default().fg(Color::Cyan)
+                } else {
+                    Style::default()
+                }
+            };
 
             // ── Top panel: track overview ─────────────────────────────────────
             let track_lines: Vec<Line> = tracks
@@ -355,9 +469,14 @@ impl App {
                 all_lines.push(fl);
             }
 
-            let overview = Paragraph::new(all_lines).block(
-                Block::default().title(" Tracks ").borders(Borders::ALL),
-            );
+            let overview = Paragraph::new(all_lines)
+                .block(
+                    Block::default()
+                        .title(" Tracks ")
+                        .borders(Borders::ALL)
+                        .border_style(border_style(&Panel::Tracks)),
+                )
+                .scroll((dashboard.track_scroll_offset, 0));
             frame.render_widget(overview, chunks[0]);
 
             // ── Middle panel: step progress ───────────────────────────────────
@@ -369,7 +488,10 @@ impl App {
                 let tracks_total = tracks.len();
                 let current_step = &dashboard.current_step;
 
-                let progress_block = Block::bordered().title(" Progress ");
+                let progress_title = if is_paused { " Progress [PAUSED] " } else { " Progress " };
+                let progress_block = Block::bordered()
+                    .title(progress_title)
+                    .border_style(border_style(&Panel::Progress));
 
                 if let Some((_, blocked)) = finished {
                     let color = if blocked > 0 { Color::Red } else { Color::Green };
@@ -432,7 +554,9 @@ impl App {
 
             // ── Bottom panel: Claude output ───────────────────────────────────
             {
-                let output_block = Block::bordered().title(" Output ");
+                let output_block = Block::bordered()
+                    .title(" Output ")
+                    .border_style(border_style(&Panel::Output));
                 let output_lines: Vec<Line> = dashboard
                     .output_lines
                     .iter()
@@ -442,6 +566,26 @@ impl App {
                     .block(output_block)
                     .scroll((dashboard.scroll_offset, 0));
                 frame.render_widget(output_para, chunks[2]);
+            }
+
+            // ── Footer: end-of-run status ─────────────────────────────────────
+            if let Some((_, blocked)) = finished {
+                let (msg, color) = if blocked > 0 {
+                    (
+                        format!(" {} step(s) blocked — press q to exit, r to retry", blocked),
+                        Color::Yellow,
+                    )
+                } else {
+                    (
+                        " Phase complete — press q to exit".to_string(),
+                        Color::Green,
+                    )
+                };
+                let footer = Paragraph::new(Line::from(Span::styled(
+                    msg,
+                    Style::default().fg(color),
+                )));
+                frame.render_widget(footer, chunks[3]);
             }
         })?;
         Ok(())

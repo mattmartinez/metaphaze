@@ -445,6 +445,25 @@ pub fn reset_step(phase_id: &str, step_id: &str) -> Result<()> {
     bail!("Step {} not found in phase {}", step_id, phase_id)
 }
 
+pub fn reset_blocked_steps(phase_id: &str) -> Result<()> {
+    let mut state = load()?;
+    for ph in &mut state.phases {
+        if ph.id != phase_id {
+            continue;
+        }
+        for track in &mut ph.tracks {
+            for step in &mut track.steps {
+                if step.status == StepStatus::Blocked {
+                    step.status = StepStatus::Pending;
+                    step.blocked_reason = None;
+                    step.attempts = 0;
+                }
+            }
+        }
+    }
+    save(&state)
+}
+
 pub fn increment_step_attempts(phase_id: &str, track_id: &str, step_id: &str) -> Result<()> {
     let mut state = load()?;
     for ph in &mut state.phases {

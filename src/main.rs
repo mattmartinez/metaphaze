@@ -116,14 +116,27 @@ fn cmd_next() -> Result<()> {
 fn cmd_auto(max_steps: Option<usize>) -> Result<()> {
     if tui::is_interactive() {
         let project_state = state::load()?;
-        tui::run_with_tui(project_state, move |sender| cmd_auto_inner(max_steps, sender))
+        tui::run_with_tui(project_state, move |sender, stop, paused| {
+            cmd_auto_inner(max_steps, sender, stop, paused)
+        })
     } else {
-        cmd_auto_inner(max_steps, None)
+        cmd_auto_inner(
+            max_steps,
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
     }
 }
 
-fn cmd_auto_inner(max_steps: Option<usize>, sender: Option<events::EventSender>) -> Result<()> {
+fn cmd_auto_inner(
+    max_steps: Option<usize>,
+    sender: Option<events::EventSender>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
     use std::collections::HashMap;
+    use std::sync::atomic::Ordering;
 
     let limit = max_steps.unwrap_or(usize::MAX);
     let mut completed = 0;
@@ -134,6 +147,20 @@ fn cmd_auto_inner(max_steps: Option<usize>, sender: Option<events::EventSender>)
     println!("Starting autonomous execution...\n");
 
     loop {
+        if stop.load(Ordering::Relaxed) {
+            println!("\nExecution stopped by user.");
+            break;
+        }
+
+        // Spin-wait while paused (check stop signal to allow clean exit while paused)
+        while paused.load(Ordering::Relaxed) && !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        if stop.load(Ordering::Relaxed) {
+            println!("\nExecution stopped by user.");
+            break;
+        }
+
         if completed >= limit {
             println!("\nReached step limit ({}). Stopping.", limit);
             break;
