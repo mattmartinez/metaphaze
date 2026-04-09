@@ -680,7 +680,8 @@ impl App {
                                 .iter()
                                 .position(|t| t.id == step.track_id)
                                 .map(|i| i + 1)
-                                .unwrap_or(tracks_done + 1);
+                                .unwrap_or(1)
+                                .min(tracks_total);
                             let elapsed = step.started_at.elapsed().as_secs();
                             Line::from(vec![
                                 Span::styled(" Step ", Style::default().fg(Color::DarkGray)),
