@@ -163,16 +163,41 @@ pub fn init_project() -> Result<ProjectState> {
         bail!(".mz/ directory already exists. Delete it first to re-initialize.");
     }
 
+    // Infer project name from current directory
+    let dir_name = std::env::current_dir()?
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "project".to_string());
+
+    // Detect tech stack from project files
+    let tech_stack = detect_tech_stack();
+
+    // Detect description from README or Cargo.toml
+    let description = detect_description(&dir_name);
+
+    println!("Detected project: {}", dir_name);
+    if !tech_stack.is_empty() {
+        println!("Detected stack:   {}", tech_stack);
+    }
+    if !description.is_empty() {
+        println!("Detected desc:    {}", description);
+    }
+    println!();
+
+    // Only ask for what we couldn't infer
     let name: String = Input::new()
         .with_prompt("Project name")
+        .default(dir_name)
         .interact_text()?;
 
     let description: String = Input::new()
         .with_prompt("What are you building? (one sentence)")
+        .default(if description.is_empty() { String::new() } else { description })
         .interact_text()?;
 
     let tech_stack: String = Input::new()
-        .with_prompt("Tech stack (e.g., Next.js, Rust, Supabase)")
+        .with_prompt("Tech stack")
+        .default(if tech_stack.is_empty() { String::new() } else { tech_stack })
         .interact_text()?;
 
     let constraints: String = Input::new()
@@ -194,11 +219,10 @@ pub fn init_project() -> Result<ProjectState> {
     fs::write(project_md_path(), &project_md)?;
 
     // Write DECISIONS.md
-    let decisions_md = format!(
-        "# Decisions\n\n\
+    let decisions_md = "# Decisions\n\n\
          Append-only register of project decisions.\n\n\
          ---\n"
-    );
+        .to_string();
     fs::write(decisions_path(), &decisions_md)?;
 
     // Write initial state
@@ -211,6 +235,87 @@ pub fn init_project() -> Result<ProjectState> {
     save(&state)?;
 
     Ok(state)
+}
+
+fn detect_tech_stack() -> String {
+    let mut stack = vec![];
+
+    if std::path::Path::new("Cargo.toml").exists() {
+        stack.push("Rust");
+    }
+    if std::path::Path::new("package.json").exists() {
+        stack.push("Node.js");
+        if std::path::Path::new("next.config.js").exists()
+            || std::path::Path::new("next.config.ts").exists()
+            || std::path::Path::new("next.config.mjs").exists()
+        {
+            stack.push("Next.js");
+        }
+        if std::path::Path::new("tsconfig.json").exists() {
+            stack.push("TypeScript");
+        }
+    }
+    if std::path::Path::new("go.mod").exists() {
+        stack.push("Go");
+    }
+    if std::path::Path::new("pyproject.toml").exists()
+        || std::path::Path::new("requirements.txt").exists()
+    {
+        stack.push("Python");
+    }
+    if std::path::Path::new("Gemfile").exists() {
+        stack.push("Ruby");
+    }
+    if std::path::Path::new("docker-compose.yml").exists()
+        || std::path::Path::new("docker-compose.yaml").exists()
+        || std::path::Path::new("Dockerfile").exists()
+    {
+        stack.push("Docker");
+    }
+    if std::path::Path::new("supabase").is_dir() {
+        stack.push("Supabase");
+    }
+
+    stack.join(", ")
+}
+
+fn detect_description(_dir_name: &str) -> String {
+    // Try Cargo.toml description
+    if let Ok(contents) = fs::read_to_string("Cargo.toml") {
+        for line in contents.lines() {
+            if let Some(desc) = line.strip_prefix("description") {
+                let desc = desc.trim().trim_start_matches('=').trim().trim_matches('"');
+                if !desc.is_empty() {
+                    return desc.to_string();
+                }
+            }
+        }
+    }
+
+    // Try package.json description
+    if let Ok(contents) = fs::read_to_string("package.json") {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
+            if let Some(desc) = json.get("description").and_then(|d| d.as_str()) {
+                if !desc.is_empty() {
+                    return desc.to_string();
+                }
+            }
+        }
+    }
+
+    // Try first meaningful line of README
+    for readme in &["README.md", "readme.md", "README"] {
+        if let Ok(contents) = fs::read_to_string(readme) {
+            for line in contents.lines().skip(1) {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') && !trimmed.starts_with('[') {
+                    return trimmed.to_string();
+                }
+            }
+        }
+    }
+
+    String::new()
 }
 
 pub fn load() -> Result<ProjectState> {

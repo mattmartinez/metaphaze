@@ -15,29 +15,33 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str) -> Result<()> {
     let rendered = prompt::render(prompt::templates::DISCUSS, &vars);
 
     let sys_prompt = format!(
-        "You are helping plan a software project called '{}'. \
-         Your job is to ask probing questions to uncover ambiguity, \
-         then record the answers as clear decisions. \
-         Write the discussion results to {}/CONTEXT.md when done.",
-        project_state.name,
-        state::context_path(phase_id).display(),
+        "{}\n\n\
+         IMPORTANT: This is an interactive discussion. Ask questions ONE AT A TIME \
+         and wait for the user to respond before moving on. \
+         When all ambiguities are resolved, write the results to \
+         .mz/phases/{}/CONTEXT.md",
+        rendered, phase_id,
     );
 
-    let opts = claude::ClaudeOptions::new(rendered)
-        .model("opus")
-        .max_turns(80)
-        .system_prompt(&sys_prompt);
+    let initial_msg = format!(
+        "I'm starting a discussion phase for {} of project '{}'. \
+         Ask me your first question about any ambiguity or missing detail.",
+        phase_id, project_state.name,
+    );
 
-    println!("Launching interactive discussion with Claude...\n");
-    let result = claude::run(opts)?;
-
-    // Write context if Claude didn't already
+    // Ensure the phase directory exists
     let ctx_path = state::context_path(phase_id);
-    if !ctx_path.exists() {
-        fs::create_dir_all(ctx_path.parent().unwrap())?;
-        fs::write(&ctx_path, &result)?;
+    fs::create_dir_all(ctx_path.parent().unwrap())?;
+
+    // Launch interactive claude session — user talks directly
+    claude::run_interactive(&sys_prompt, &initial_msg)?;
+
+    if ctx_path.exists() {
+        println!("\nDiscussion complete. Context saved to {}", ctx_path.display());
+    } else {
+        println!("\nSession ended. No CONTEXT.md was written.");
+        println!("Run `mz discuss` again to continue, or create it manually.");
     }
 
-    println!("\nDiscussion complete. Context saved to {}", ctx_path.display());
     Ok(())
 }
