@@ -14,6 +14,8 @@ pub struct StepEntry {
     pub title: String,
     pub status: StepStatus,
     pub blocked_reason: Option<String>,
+    #[serde(default)]
+    pub attempts: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,6 +55,20 @@ impl ProjectState {
     }
 
     pub fn next_pending_step(&self) -> Option<(String, String, String)> {
+        // First pass: return any in-progress step (crash recovery)
+        for ph in &self.phases {
+            if ph.id != self.current_phase {
+                continue;
+            }
+            for track in &ph.tracks {
+                for step in &track.steps {
+                    if step.status == StepStatus::InProgress {
+                        return Some((ph.id.clone(), track.id.clone(), step.id.clone()));
+                    }
+                }
+            }
+        }
+        // Second pass: return next pending step
         for ph in &self.phases {
             if ph.id != self.current_phase {
                 continue;
@@ -66,6 +82,25 @@ impl ProjectState {
             }
         }
         None
+    }
+
+    pub fn step_attempts(&self, phase_id: &str, track_id: &str, step_id: &str) -> u32 {
+        for ph in &self.phases {
+            if ph.id != phase_id {
+                continue;
+            }
+            for track in &ph.tracks {
+                if track.id != track_id {
+                    continue;
+                }
+                for step in &track.steps {
+                    if step.id == step_id {
+                        return step.attempts;
+                    }
+                }
+            }
+        }
+        0
     }
 
     pub fn is_track_complete(&self, phase_id: &str, track_id: &str) -> bool {
@@ -357,6 +392,64 @@ pub fn mark_step_in_progress(phase_id: &str, track_id: &str, step_id: &str) -> R
     let mut state = load()?;
     update_step_status(&mut state, phase_id, track_id, step_id, StepStatus::InProgress, None)?;
     save(&state)
+}
+
+pub fn reset_step(phase_id: &str, step_id: &str) -> Result<()> {
+    let mut state = load()?;
+
+    // Parse optional track prefix: "TR02/ST01" or just "ST01"
+    let (track_prefix, bare_step_id) = if let Some(slash) = step_id.find('/') {
+        let (tr, _st) = step_id.split_at(slash);
+        (Some(tr.to_string()), &step_id[slash + 1..])
+    } else {
+        (None, step_id)
+    };
+
+    for ph in &mut state.phases {
+        if ph.id != phase_id {
+            continue;
+        }
+        for track in &mut ph.tracks {
+            if let Some(ref prefix) = track_prefix {
+                if &track.id != prefix {
+                    continue;
+                }
+            }
+            for step in &mut track.steps {
+                if step.id == bare_step_id {
+                    step.status = StepStatus::Pending;
+                    step.blocked_reason = None;
+                    step.attempts = 0;
+                    save(&state)?;
+                    println!("Reset {} to pending", step_id);
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    bail!("Step {} not found in phase {}", step_id, phase_id)
+}
+
+pub fn increment_step_attempts(phase_id: &str, track_id: &str, step_id: &str) -> Result<()> {
+    let mut state = load()?;
+    for ph in &mut state.phases {
+        if ph.id != phase_id {
+            continue;
+        }
+        for track in &mut ph.tracks {
+            if track.id != track_id {
+                continue;
+            }
+            for step in &mut track.steps {
+                if step.id == step_id {
+                    step.attempts += 1;
+                    return save(&state);
+                }
+            }
+        }
+    }
+    bail!("Step {}/{}/{} not found", phase_id, track_id, step_id)
 }
 
 fn update_step_status(

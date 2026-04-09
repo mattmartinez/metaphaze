@@ -56,6 +56,12 @@ enum Commands {
         /// The decision or direction change
         message: String,
     },
+
+    /// Reset a step back to pending (escape hatch for blocked or stuck steps)
+    Reset {
+        /// Step ID to reset — e.g. ST03 or TR02/ST01
+        step_id: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -69,6 +75,10 @@ fn main() -> Result<()> {
         Commands::Auto { max_steps } => cmd_auto(max_steps),
         Commands::Status { detail } => cmd_status(detail),
         Commands::Steer { message } => cmd_steer(message),
+        Commands::Reset { step_id } => {
+            let project_state = state::load()?;
+            state::reset_step(&project_state.current_phase, &step_id)
+        }
     }
 }
 
@@ -102,8 +112,11 @@ fn cmd_next() -> Result<()> {
 }
 
 fn cmd_auto(max_steps: Option<usize>) -> Result<()> {
+    use std::collections::HashMap;
+
     let limit = max_steps.unwrap_or(usize::MAX);
     let mut completed = 0;
+    let mut retries: HashMap<String, u32> = HashMap::new();
 
     println!("Starting autonomous execution...\n");
 
@@ -119,9 +132,29 @@ fn cmd_auto(max_steps: Option<usize>) -> Result<()> {
             Some((phase_id, track_id, step_id)) => {
                 println!("━━━ {}/{}/{} ━━━", phase_id, track_id, step_id);
 
+                let key = format!("{}/{}", track_id, step_id);
+                // Seed from persisted attempts on first encounter (supports restart recovery)
+                let count = retries
+                    .entry(key.clone())
+                    .or_insert_with(|| project_state.step_attempts(&phase_id, &track_id, &step_id));
+
                 if let Err(e) = executor::run_step(&project_state, &phase_id, &track_id, &step_id) {
                     eprintln!("Step failed: {}", e);
-                    state::mark_step_blocked(&phase_id, &track_id, &step_id, &format!("{e}"))?;
+                    *count += 1;
+                    state::increment_step_attempts(&phase_id, &track_id, &step_id)?;
+
+                    if *count >= 3 {
+                        eprintln!("Step {} failed after 3 attempts. Marking blocked.", step_id);
+                        state::mark_step_blocked(
+                            &phase_id,
+                            &track_id,
+                            &step_id,
+                            "Failed after 3 retries",
+                        )?;
+                    } else {
+                        eprintln!("Retrying {} (attempt {}/3)", step_id, count);
+                        // Step remains InProgress; loop will pick it up again
+                    }
                     continue;
                 }
 

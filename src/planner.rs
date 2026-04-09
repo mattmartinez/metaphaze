@@ -148,6 +148,7 @@ fn parse_and_create_steps(
                 title: step_title,
                 status: state::StepStatus::Pending,
                 blocked_reason: None,
+                attempts: 0,
             });
         }
 
