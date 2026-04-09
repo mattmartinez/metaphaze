@@ -4,22 +4,33 @@ use std::io::Write;
 
 use crate::{claude, events, events::EventSender, git, prompt, state, verifier};
 
-pub fn run_next(project_state: &state::ProjectState, sender: Option<&EventSender>) -> Result<()> {
+/// Returns (completed: bool, blocked: bool) for TUI signaling
+pub fn run_next(project_state: &state::ProjectState, sender: Option<&EventSender>) -> Result<(bool, bool)> {
     match project_state.next_pending_step() {
         Some((phase_id, track_id, step_id)) => {
             events::emit(sender, &format!("Executing {}/{}/{}...", phase_id, track_id, step_id));
             run_step(project_state, &phase_id, &track_id, &step_id, sender)?;
             if let Some(tx) = sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
-            if let Err(e) = verifier::run_step(project_state, &phase_id, &track_id, &step_id, sender) {
-                events::emit(sender, &format!("Verification failed: {}", e));
+            let verify_passed = match verifier::run_step(project_state, &phase_id, &track_id, &step_id, sender) {
+                Ok(()) => true,
+                Err(e) => {
+                    events::emit(sender, &format!("Verification failed: {}", e));
+                    false
+                }
+            };
+            if verify_passed {
+                state::mark_step_complete(&phase_id, &track_id, &step_id)?;
+                events::emit(sender, "Step complete.");
+                Ok((true, false))
+            } else {
+                events::emit(sender, "Step verification failed — marking blocked.");
+                state::mark_step_blocked(&phase_id, &track_id, &step_id, "Verification failed")?;
+                Ok((false, true))
             }
-            state::mark_step_complete(&phase_id, &track_id, &step_id)?;
-            events::emit(sender, "Step complete.");
-            Ok(())
         }
         None => {
             events::emit(sender, "No pending steps.");
-            Ok(())
+            Ok((false, false))
         }
     }
 }

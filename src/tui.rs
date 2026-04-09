@@ -746,7 +746,8 @@ impl App {
                         OutputLine::Label(s) => {
                             let panel_width = chunks[2].width.saturating_sub(2);
                             let label = format!(" {} ", s);
-                            let label_len = label.len() as u16;
+                            // BUG-22 fix: use display width, not byte length
+                            let label_len = label.width() as u16;
                             let left = panel_width.saturating_sub(label_len) / 2;
                             let right = panel_width.saturating_sub(left + label_len);
                             let separator = format!(
@@ -801,10 +802,10 @@ impl App {
                     }
                 };
 
-                // Build spans with padding to fill the bar
-                let left_len = left_text.chars().count();
-                let center_len = center_text.chars().count();
-                let right_len = right_text.chars().count();
+                // BUG-23 fix: use display width, not char count
+                let left_len = left_text.width();
+                let center_len = center_text.width();
+                let right_len = right_text.width();
 
                 // Padding: center the model name, right-align the keybindings
                 let left_pad = if center_len > 0 {

@@ -196,7 +196,9 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
 
     if !status.success() {
         let combined = if stderr.is_empty() {
-            format!("claude exited with {} (no stderr)\nstdout: {}", status, &stdout[..stdout.len().min(500)])
+            // BUG-24 fix: truncate at char boundary, not byte boundary
+            let preview: String = stdout.chars().take(500).collect();
+            format!("claude exited with {} (no stderr)\nstdout: {}", status, preview)
         } else {
             format!("claude exited with {}: {}", status, stderr.trim())
         };

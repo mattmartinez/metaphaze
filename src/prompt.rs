@@ -18,6 +18,15 @@ pub fn render(template: &str, vars: &HashMap<&str, String>) -> String {
         let placeholder = format!("{{{{{}}}}}", key);
         result = result.replace(&placeholder, value);
     }
+    // BUG-28 fix: warn about unresolved placeholders
+    if result.contains("{{") {
+        let re = regex::Regex::new(r"\{\{(\w+)\}\}").ok();
+        if let Some(re) = re {
+            for cap in re.captures_iter(&result) {
+                eprintln!("[warn] unresolved template variable: {{{{{}}}}}", &cap[1]);
+            }
+        }
+    }
     result
 }
 

@@ -75,12 +75,16 @@ impl ProjectState {
                 }
             }
         }
-        // Second pass: return next pending step
+        // Second pass: return next pending step, respecting track dependencies (BUG-9 fix)
         for ph in &self.phases {
             if ph.id != self.current_phase {
                 continue;
             }
             for track in &ph.tracks {
+                // Skip tracks whose dependencies aren't all complete
+                if !self.track_deps_satisfied(ph, track) {
+                    continue;
+                }
                 for step in &track.steps {
                     if step.status == StepStatus::Pending {
                         return Some((ph.id.clone(), track.id.clone(), step.id.clone()));
@@ -108,6 +112,18 @@ impl ProjectState {
             }
         }
         0
+    }
+
+    fn track_deps_satisfied(&self, phase: &PhaseEntry, track: &TrackEntry) -> bool {
+        for dep_id in &track.depends_on {
+            let dep_complete = phase.tracks.iter().any(|t| {
+                t.id == *dep_id && t.steps.iter().all(|s| s.status == StepStatus::Complete)
+            });
+            if !dep_complete {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn is_track_complete(&self, phase_id: &str, track_id: &str) -> bool {
@@ -385,42 +401,49 @@ pub fn load() -> Result<ProjectState> {
 
 pub fn save(state: &ProjectState) -> Result<()> {
     let yaml = serde_yaml::to_string(state).context("Failed to serialize state")?;
-    fs::write(state_path(), yaml).context("Failed to write state.yaml")?;
+    // Atomic write: write to temp file then rename (BUG-2 partial fix)
+    let path = state_path();
+    let tmp = path.with_extension("yaml.tmp");
+    fs::write(&tmp, &yaml).context("Failed to write state.yaml.tmp")?;
+    fs::rename(&tmp, &path).context("Failed to rename state.yaml.tmp")?;
     Ok(())
+}
+
+/// Load state, apply a mutation, save atomically. Minimizes the race window.
+fn mutate_state<F>(f: F) -> Result<()>
+where
+    F: FnOnce(&mut ProjectState) -> Result<()>,
+{
+    let mut state = load()?;
+    f(&mut state)?;
+    save(&state)
 }
 
 pub fn mark_step_complete(phase_id: &str, track_id: &str, step_id: &str) -> Result<()> {
-    let mut state = load()?;
-    update_step_status(&mut state, phase_id, track_id, step_id, StepStatus::Complete, None)?;
-    save(&state)
+    mutate_state(|state| {
+        update_step_status(state, phase_id, track_id, step_id, StepStatus::Complete, None)
+    })
 }
 
 pub fn mark_step_blocked(phase_id: &str, track_id: &str, step_id: &str, reason: &str) -> Result<()> {
-    let mut state = load()?;
-    update_step_status(
-        &mut state,
-        phase_id,
-        track_id,
-        step_id,
-        StepStatus::Blocked,
-        Some(reason.to_string()),
-    )?;
-    save(&state)
+    mutate_state(|state| {
+        update_step_status(state, phase_id, track_id, step_id, StepStatus::Blocked, Some(reason.to_string()))
+    })
 }
 
 pub fn mark_step_in_progress(phase_id: &str, track_id: &str, step_id: &str) -> Result<()> {
-    let mut state = load()?;
-    update_step_status(&mut state, phase_id, track_id, step_id, StepStatus::InProgress, None)?;
-    save(&state)
+    mutate_state(|state| {
+        update_step_status(state, phase_id, track_id, step_id, StepStatus::InProgress, None)
+    })
 }
 
 pub fn advance_phase(phase_id: &str) -> Result<()> {
-    let mut state = load()?;
-    if phase_id > state.current_phase.as_str() {
-        state.current_phase = phase_id.to_string();
-        save(&state)?;
-    }
-    Ok(())
+    mutate_state(|state| {
+        if phase_id > state.current_phase.as_str() {
+            state.current_phase = phase_id.to_string();
+        }
+        Ok(())
+    })
 }
 
 pub fn reset_step(phase_id: &str, step_id: &str) -> Result<()> {

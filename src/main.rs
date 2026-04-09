@@ -68,6 +68,9 @@ enum Commands {
     Reset {
         /// Step ID to reset — e.g. ST03 or TR02/ST01
         step_id: String,
+        /// Phase to target (defaults to current phase)
+        #[arg(long)]
+        phase: Option<String>,
     },
 }
 
@@ -83,9 +86,10 @@ fn main() -> Result<()> {
         Commands::Auto { max_steps } => cmd_auto(max_steps, no_tui),
         Commands::Status { detail } => cmd_status(detail),
         Commands::Steer { message } => cmd_steer(message),
-        Commands::Reset { step_id } => {
+        Commands::Reset { step_id, phase } => {
             let project_state = state::load()?;
-            state::reset_step(&project_state.current_phase, &step_id)
+            let phase_id = phase.unwrap_or_else(|| project_state.current_phase().to_string());
+            state::reset_step(&phase_id, &step_id)
         }
     }
 }
@@ -178,7 +182,8 @@ fn cmd_next(no_tui: bool) -> Result<()> {
         })
     } else {
         let project_state = state::load()?;
-        executor::run_next(&project_state, None)
+        executor::run_next(&project_state, None)?;
+        Ok(())
     }
 }
 
@@ -240,21 +245,36 @@ fn cmd_next_inner(
             let run_result =
                 executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref());
 
-            if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
-            if let Err(e) = verifier::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
-                eprintln!("Verification failed: {}", e);
-            }
-
             let (completed, blocked) = match run_result {
                 Ok(()) => {
-                    state::mark_step_complete(&phase_id, &track_id, &step_id)?;
-                    println!("\nStep complete.");
-                    if let Some(tx) = &sender {
-                        let _ = tx.send(events::ProgressEvent::StepCompleted {
-                            track_id: track_id.clone(),
-                        });
+                    // BUG-1 fix: only verify when execution succeeded
+                    if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
+                    let verify_ok = match verifier::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            emit_output(&sender, &format!("Verification failed: {}", e));
+                            false
+                        }
+                    };
+                    // BUG-17 fix: verification failure blocks step completion
+                    if verify_ok {
+                        state::mark_step_complete(&phase_id, &track_id, &step_id)?;
+                        emit_output(&sender, "Step complete.");
+                        if let Some(tx) = &sender {
+                            let _ = tx.send(events::ProgressEvent::StepCompleted {
+                                track_id: track_id.clone(),
+                            });
+                        }
+                        (1, 0)
+                    } else {
+                        state::mark_step_blocked(&phase_id, &track_id, &step_id, "Verification failed")?;
+                        if let Some(tx) = &sender {
+                            let _ = tx.send(events::ProgressEvent::StepFailed {
+                                track_id: track_id.clone(),
+                            });
+                        }
+                        (0, 1)
                     }
-                    (1, 0)
                 }
                 Err(e) => {
                     emit_output(&sender, &format!("Step failed: {}", e));
@@ -383,10 +403,15 @@ fn cmd_auto_inner(
                 }
 
                 let key = format!("{}/{}", track_id, step_id);
-                // Seed from persisted attempts on first encounter (supports restart recovery)
-                let count = retries
-                    .entry(key.clone())
-                    .or_insert_with(|| project_state.step_attempts(&phase_id, &track_id, &step_id));
+                // BUG-21 fix: always resync from disk in case of external reset
+                let disk_attempts = project_state.step_attempts(&phase_id, &track_id, &step_id);
+                let count = retries.entry(key.clone()).or_insert(0);
+                if disk_attempts < *count {
+                    // External reset detected — honor it
+                    *count = disk_attempts;
+                } else {
+                    *count = disk_attempts;
+                }
 
                 if let Err(e) = executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
                     emit_output(&sender, &format!("Step failed: {}", e));
@@ -415,18 +440,33 @@ fn cmd_auto_inner(
                     continue;
                 }
 
+                // BUG-25 fix: verification failure blocks step completion
                 if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
-                if let Err(e) = verifier::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
-                    emit_output(&sender, &format!("Verification failed: {}", e));
-                }
+                let verify_ok = match verifier::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        emit_output(&sender, &format!("Verification failed: {}", e));
+                        false
+                    }
+                };
 
-                state::mark_step_complete(&phase_id, &track_id, &step_id)?;
-                completed += 1;
-
-                if let Some(tx) = &sender {
-                    let _ = tx.send(events::ProgressEvent::StepCompleted {
-                        track_id: track_id.clone(),
-                    });
+                if verify_ok {
+                    state::mark_step_complete(&phase_id, &track_id, &step_id)?;
+                    completed += 1;
+                    if let Some(tx) = &sender {
+                        let _ = tx.send(events::ProgressEvent::StepCompleted {
+                            track_id: track_id.clone(),
+                        });
+                    }
+                } else {
+                    state::mark_step_blocked(&phase_id, &track_id, &step_id, "Verification failed")?;
+                    blocked += 1;
+                    if let Some(tx) = &sender {
+                        let _ = tx.send(events::ProgressEvent::StepFailed {
+                            track_id: track_id.clone(),
+                        });
+                    }
+                    continue;
                 }
 
                 let updated = state::load()?;

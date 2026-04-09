@@ -39,8 +39,17 @@ pub fn run_step(
         .join(format!("{}-VERIFY.md", step_id));
     fs::write(&verify_path, &result)?;
 
-    // Check for PASS/FAIL in output
-    if result.to_lowercase().contains("fail") && !result.to_lowercase().contains("pass") {
+    // Check for structured VERDICT line
+    let lower = result.to_lowercase();
+    let has_verdict_fail = lower.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.contains("verdict") && trimmed.contains("fail") && !trimmed.contains("pass")
+    });
+    let has_status_fail = lower.lines().any(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with("**status:**") && trimmed.contains("fail")
+    });
+    if has_verdict_fail || has_status_fail {
         anyhow::bail!("Verification failed for {}", step_id);
     }
 
