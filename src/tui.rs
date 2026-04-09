@@ -72,6 +72,8 @@ pub struct StepInfo {
 }
 
 const MAX_OUTPUT_LINES: usize = 5000;
+const MIN_TUI_WIDTH: u16 = 60;
+const MIN_TUI_HEIGHT: u16 = 20;
 
 #[derive(Debug, Clone)]
 pub enum OutputLine {
@@ -319,6 +321,14 @@ where
     let paused = Arc::new(AtomicBool::new(false));
     let mut app = init(dashboard, rx, Arc::clone(&stop_signal), Arc::clone(&paused))?;
 
+    // Fall back to non-TUI if terminal is too small
+    let size = app.terminal.size()?;
+    if size.width < MIN_TUI_WIDTH || size.height < MIN_TUI_HEIGHT {
+        app.restore()?;
+        eprintln!("Terminal too small for TUI, falling back to text output");
+        return task(None, stop_signal, paused);
+    }
+
     let task_clone = Arc::clone(&task);
     let stop_for_thread = Arc::clone(&stop_signal);
     let paused_for_thread = Arc::clone(&paused);
@@ -484,6 +494,18 @@ impl App {
 
         self.terminal.draw(|frame| {
             let area = frame.area();
+
+            // If the terminal has been resized below minimums, show a message and wait for resize
+            if area.width < MIN_TUI_WIDTH || area.height < MIN_TUI_HEIGHT {
+                let msg = "Terminal too small — resize to continue";
+                let y = area.height / 2;
+                let rect = ratatui::layout::Rect::new(area.x, area.y + y, area.width, 1);
+                let para = Paragraph::new(msg)
+                    .alignment(ratatui::layout::Alignment::Center)
+                    .style(Style::default().fg(Color::Yellow));
+                frame.render_widget(para, rect);
+                return;
+            }
 
             // Four vertical chunks: top=track overview, middle=step progress, bottom=output, footer=status
             let track_height = (tracks.len() as u16 + 2).max(4).min(8); // borders + content, capped at 8
@@ -673,12 +695,25 @@ impl App {
                             format!("  ✓ {}", s),
                             Style::default().fg(Color::DarkGray),
                         )),
-                        OutputLine::Label(s) => Line::from(Span::styled(
-                            s.clone(),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        )),
+                        OutputLine::Label(s) => {
+                            let panel_width = chunks[2].width.saturating_sub(2);
+                            let label = format!(" {} ", s);
+                            let label_len = label.len() as u16;
+                            let left = panel_width.saturating_sub(label_len) / 2;
+                            let right = panel_width.saturating_sub(left + label_len);
+                            let separator = format!(
+                                "{}{}{}",
+                                "─".repeat(left as usize),
+                                label,
+                                "─".repeat(right as usize)
+                            );
+                            Line::from(Span::styled(
+                                separator,
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ))
+                        }
                     })
                     .collect();
                 let output_para = Paragraph::new(output_lines)
