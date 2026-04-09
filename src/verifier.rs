@@ -1,13 +1,14 @@
 use anyhow::Result;
 use std::fs;
 
-use crate::{claude, prompt, state};
+use crate::{claude, events::EventSender, prompt, state};
 
 pub fn run_step(
     _project_state: &state::ProjectState,
     phase_id: &str,
     track_id: &str,
     step_id: &str,
+    sender: Option<&EventSender>,
 ) -> Result<()> {
     let step_plan = state::read_step_plan(phase_id, track_id, step_id)?;
     let step_summary = state::read_step_summary(phase_id, track_id, step_id)?;
@@ -30,7 +31,7 @@ pub fn run_step(
         .max_turns(30);
 
     println!("  Verifying {}/{}...", track_id, step_id);
-    let result = claude::run(opts, None)?;
+    let result = claude::run(opts, sender)?;
 
     // Write verification result
     let verify_path = state::track_dir(phase_id, track_id)
@@ -51,6 +52,7 @@ pub fn run_track(
     project_state: &state::ProjectState,
     phase_id: &str,
     track_id: &str,
+    sender: Option<&EventSender>,
 ) -> Result<()> {
     // Gather all step plans and summaries for the track
     let mut all_plans = String::new();
@@ -82,7 +84,7 @@ pub fn run_track(
         .max_turns(40);
 
     println!("Running end-to-end track verification...");
-    let result = claude::run(opts, None)?;
+    let result = claude::run(opts, sender)?;
 
     // Write track verification
     let verify_path = state::track_dir(phase_id, track_id).join("VERIFICATION.md");

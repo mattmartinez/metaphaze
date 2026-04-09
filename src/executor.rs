@@ -9,7 +9,8 @@ pub fn run_next(project_state: &state::ProjectState, sender: Option<&EventSender
         Some((phase_id, track_id, step_id)) => {
             println!("Executing {}/{}/{}...\n", phase_id, track_id, step_id);
             run_step(project_state, &phase_id, &track_id, &step_id, sender)?;
-            if let Err(e) = verifier::run_step(project_state, &phase_id, &track_id, &step_id) {
+            if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
+            if let Err(e) = verifier::run_step(project_state, &phase_id, &track_id, &step_id, sender) {
                 eprintln!("Verification failed: {}", e);
             }
             state::mark_step_complete(&phase_id, &track_id, &step_id)?;
@@ -44,6 +45,7 @@ pub fn run_step(
     fs::write(&log_path, "")?;
 
     // Plan the track before executing the first step
+    if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── plan ──".into() }); }
     let plan_output = plan_track(project_state, phase_id, track_id, step_id, sender)?;
     if let Some(output) = plan_output {
         append_to_log(&log_path, "--- track planning ---\n", &output);
@@ -92,6 +94,7 @@ pub fn run_step(
         .max_turns(50)
         .system_prompt(&sys_prompt);
 
+    if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── execute ──".into() }); }
     let step_output = claude::run(opts, sender);
     // Write step output to log even if it failed
     match &step_output {
@@ -101,6 +104,7 @@ pub fn run_step(
     let _result = step_output?;
 
     // Summarize what was done before committing
+    if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── summarize ──".into() }); }
     let summary_output = summarize_step(phase_id, track_id, step_id, sender)?;
     append_to_log(&log_path, "--- summarization ---\n", &summary_output);
 

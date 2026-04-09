@@ -239,7 +239,8 @@ fn cmd_next_inner(
             let run_result =
                 executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref());
 
-            if let Err(e) = verifier::run_step(&project_state, &phase_id, &track_id, &step_id) {
+            if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
+            if let Err(e) = verifier::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
                 eprintln!("Verification failed: {}", e);
             }
 
@@ -409,7 +410,8 @@ fn cmd_auto_inner(
                     continue;
                 }
 
-                if let Err(e) = verifier::run_step(&project_state, &phase_id, &track_id, &step_id) {
+                if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
+                if let Err(e) = verifier::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
                     eprintln!("Verification failed: {}", e);
                 }
 
@@ -425,7 +427,8 @@ fn cmd_auto_inner(
                 let updated = state::load()?;
                 if updated.is_track_complete(&phase_id, &track_id) {
                     println!("\nTrack {} complete. Running track verification...", track_id);
-                    if let Err(e) = verifier::run_track(&updated, &phase_id, &track_id) {
+                    if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify track ──".into() }); }
+                    if let Err(e) = verifier::run_track(&updated, &phase_id, &track_id, sender.as_ref()) {
                         eprintln!("Track verification issue: {}", e);
                     }
                     if let Err(e) = git::merge_track(&phase_id, &track_id) {
