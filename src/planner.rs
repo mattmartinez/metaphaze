@@ -173,6 +173,19 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
 fn parse_and_write_tracks(phase_id: &str, plan_output: &str) -> Result<Vec<state::TrackEntry>> {
     let track_re = Regex::new(r"(?m)^## (TR\d+)\s*[—-]\s*(.+)$")?;
     let step_re = Regex::new(r"(?m)^### (ST\d+)\s*[—-]\s*(.+)$")?;
+    let dep_re = Regex::new(r"TR(\d+)\s+depends on\s+TR(\d+)")?;
+
+    // Extract the preamble (content before the first ## TR header) for dependency parsing
+    let first_track_pos = track_re.find(plan_output).map(|m| m.start()).unwrap_or(0);
+    let preamble = &plan_output[..first_track_pos];
+
+    // Build a map of track_id -> depends_on from the preamble
+    let mut dep_map: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for caps in dep_re.captures_iter(preamble) {
+        let dependent = format!("TR{}", &caps[1]);
+        let dependency = format!("TR{}", &caps[2]);
+        dep_map.entry(dependent).or_default().push(dependency);
+    }
 
     let mut tracks = vec![];
     let track_matches: Vec<_> = track_re.find_iter(plan_output).collect();
@@ -194,10 +207,13 @@ fn parse_and_write_tracks(phase_id: &str, plan_output: &str) -> Result<Vec<state
         let steps_dir = track_dir.join("steps");
         fs::create_dir_all(&steps_dir)?;
 
+        let depends_on = dep_map.remove(&track_id).unwrap_or_default();
+
         let mut track_entry = state::TrackEntry {
             id: track_id.clone(),
             title: track_title.clone(),
             steps: vec![],
+            depends_on,
         };
 
         let step_matches: Vec<_> = step_re.find_iter(track_content).collect();

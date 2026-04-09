@@ -32,6 +32,8 @@ pub struct TrackEntry {
     pub id: String,
     pub title: String,
     pub steps: Vec<StepEntry>,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -603,16 +605,44 @@ pub fn collect_dependency_summaries(
     track_id: &str,
     step_id: &str,
 ) -> Result<String> {
-    let mut summaries = String::new();
+    // Find the current track to get its depends_on list
+    let depends_on: Vec<String> = state
+        .phases
+        .iter()
+        .find(|ph| ph.id == phase_id)
+        .and_then(|ph| ph.tracks.iter().find(|t| t.id == track_id))
+        .map(|t| t.depends_on.clone())
+        .unwrap_or_default();
 
-    for ph in &state.phases {
-        if ph.id != phase_id {
-            continue;
-        }
-        for track in &ph.tracks {
-            if track.id != track_id {
-                continue;
+    let mut cross_track_parts: Vec<String> = Vec::new();
+
+    // Collect summaries from dependency tracks
+    for dep_track_id in &depends_on {
+        let mut dep_summaries = String::new();
+        if let Some(ph) = state.phases.iter().find(|ph| ph.id == phase_id) {
+            if let Some(dep_track) = ph.tracks.iter().find(|t| &t.id == dep_track_id) {
+                for step in &dep_track.steps {
+                    if step.status == StepStatus::Complete {
+                        let summary = read_step_summary(phase_id, dep_track_id, &step.id)?;
+                        if !summary.is_empty() {
+                            dep_summaries.push_str(&format!(
+                                "\n### {} — {}\n\n{}\n",
+                                step.id, step.title, summary
+                            ));
+                        }
+                    }
+                }
             }
+        }
+        if !dep_summaries.is_empty() {
+            cross_track_parts.push(format!("## From {}\n{}", dep_track_id, dep_summaries));
+        }
+    }
+
+    // Collect within-track summaries (steps prior to current step)
+    let mut within_track = String::new();
+    if let Some(ph) = state.phases.iter().find(|ph| ph.id == phase_id) {
+        if let Some(track) = ph.tracks.iter().find(|t| t.id == track_id) {
             for step in &track.steps {
                 if step.id == step_id {
                     break;
@@ -620,7 +650,7 @@ pub fn collect_dependency_summaries(
                 if step.status == StepStatus::Complete {
                     let summary = read_step_summary(phase_id, track_id, &step.id)?;
                     if !summary.is_empty() {
-                        summaries.push_str(&format!(
+                        within_track.push_str(&format!(
                             "\n### {} — {}\n\n{}\n",
                             step.id, step.title, summary
                         ));
@@ -630,7 +660,21 @@ pub fn collect_dependency_summaries(
         }
     }
 
-    Ok(summaries)
+    // Combine: cross-track deps first, then current track
+    if cross_track_parts.is_empty() && within_track.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut result = String::new();
+    for part in cross_track_parts {
+        result.push_str(&part);
+        result.push('\n');
+    }
+    if !within_track.is_empty() {
+        result.push_str(&format!("## From {} (current track)\n{}", track_id, within_track));
+    }
+
+    Ok(result)
 }
 
 pub fn print_status(state: &ProjectState, detail: bool) -> Result<()> {
