@@ -1,5 +1,6 @@
 mod claude;
 mod discuss;
+mod tui;
 mod executor;
 mod git;
 mod planner;
@@ -112,6 +113,14 @@ fn cmd_next() -> Result<()> {
 }
 
 fn cmd_auto(max_steps: Option<usize>) -> Result<()> {
+    if tui::is_interactive() {
+        tui::run_with_tui(move || cmd_auto_inner(max_steps))
+    } else {
+        cmd_auto_inner(max_steps)
+    }
+}
+
+fn cmd_auto_inner(max_steps: Option<usize>) -> Result<()> {
     use std::collections::HashMap;
 
     let limit = max_steps.unwrap_or(usize::MAX);
