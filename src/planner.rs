@@ -50,53 +50,131 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
     let decisions = state::read_decisions()?;
     let context = state::read_context(phase_id)?;
 
-    // Gather current state for context
-    let current_state = serde_yaml::to_string(project_state)?;
+    // Build context about what's already completed (so Claude knows what's frozen)
+    let mut completed_context = String::new();
+    for ph in &project_state.phases {
+        if ph.id != phase_id {
+            continue;
+        }
+        for track in &ph.tracks {
+            let has_complete = track.steps.iter().any(|s| s.status == state::StepStatus::Complete);
+            if !has_complete {
+                continue;
+            }
+            let all_complete = track.steps.iter().all(|s| s.status == state::StepStatus::Complete);
+            let done_label = if all_complete { " (FULLY COMPLETE — OMIT FROM OUTPUT)" } else { "" };
+            completed_context.push_str(&format!(
+                "\n## {} — {}{}\n",
+                track.id, track.title, done_label
+            ));
+            for step in &track.steps {
+                if step.status == state::StepStatus::Complete {
+                    completed_context.push_str(&format!(
+                        "### {} — {} [COMPLETED]\n",
+                        step.id, step.title
+                    ));
+                    let summary = state::read_step_summary(phase_id, &track.id, &step.id)?;
+                    if !summary.is_empty() {
+                        completed_context.push_str(&format!("{}\n\n", summary));
+                    }
+                }
+            }
+        }
+    }
 
     let prompt_text = format!(
         "# Re-planning Required\n\n\
          A new decision has been made:\n\n> {}\n\n\
-         ## Current Project\n\n{}\n\n\
-         ## Current State\n\n```yaml\n{}\n```\n\n\
+         ## Project\n\n{}\n\n\
          ## Decisions\n\n{}\n\n\
          ## Context\n\n{}\n\n\
-         Re-plan the REMAINING (pending) steps for phase {}. \
-         Keep completed steps as-is. Output updated step plans for any \
-         steps that need to change. Use the same format as the original plan.",
-        decision, project_md, current_state, decisions, context, phase_id,
+         ## Completed Work (frozen — do not include in output)\n\n{}\n\n\
+         ## Instructions\n\n\
+         Output ONLY the remaining (non-completed) tracks and steps for phase {} \
+         using this exact format:\n\n\
+         ```\n\
+         ## TR{{nn}} — Track Title\n\
+         ### ST{{nn}} — Step Title\n\
+         (step plan content)\n\
+         ```\n\n\
+         Rules:\n\
+         - Do NOT include fully-completed tracks or completed steps in your output\n\
+         - For tracks that are partially complete: output only the remaining pending steps \
+           under the same track heading\n\
+         - You may add new tracks or reorganize pending work to reflect the new decision\n\
+         - Use TR/ST numbering that does not conflict with completed tracks/steps\n\
+         - Each step must be completable in a single Claude Code session\n\
+         - Output raw markdown only — no preamble, no explanation",
+        decision, project_md, decisions, context, completed_context, phase_id,
+    );
+
+    let sys_prompt = format!(
+        "You are a senior software architect re-planning phase {} for '{}'. \
+         Output ONLY the remaining tracks and steps in the exact format specified. \
+         Completed work is frozen — do not include it in your output.",
+        phase_id, project_state.name,
     );
 
     let opts = claude::ClaudeOptions::new(prompt_text)
         .model("opus")
-        .max_turns(40);
+        .max_turns(40)
+        .system_prompt(&sys_prompt);
 
-    println!("Re-planning...\n");
+    println!("Re-planning remaining steps...\n");
     let result = claude::run(opts)?;
-    println!("{}", result);
+
+    // Update ROADMAP.md with the re-plan
+    let roadmap_content = format!(
+        "# Phase {} Re-plan\n\n\
+         > Steering decision: {}\n\n\
+         ## Remaining Work\n\n{}",
+        phase_id, decision, result
+    );
+    fs::write(state::roadmap_path(phase_id), &roadmap_content)?;
+
+    // Delete plan files for pending steps — they'll be replaced or dropped
+    for ph in &project_state.phases {
+        if ph.id != phase_id {
+            continue;
+        }
+        for track in &ph.tracks {
+            for step in &track.steps {
+                if step.status == state::StepStatus::Pending {
+                    let plan_path = state::step_plan_path(phase_id, &track.id, &step.id);
+                    if plan_path.exists() {
+                        fs::remove_file(&plan_path)?;
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse Claude's output and write new step/track plan files
+    let new_tracks = parse_and_write_tracks(phase_id, &result)?;
+
+    // Merge new tracks into existing state (preserving completed/in-progress steps)
+    let mut new_state = project_state.clone();
+    for ph in &mut new_state.phases {
+        if ph.id == phase_id {
+            state::merge_replan(ph, new_tracks);
+            state::save(&new_state)?;
+            println!("\nRe-plan complete. ROADMAP.md updated.");
+            println!("Run `mz status --detail` to see the updated plan.");
+            return Ok(());
+        }
+    }
+
+    // Phase not found in state yet — shouldn't happen after a steer, but handle gracefully
+    println!("\nWarning: phase {} not found in state; no merge performed.", phase_id);
     Ok(())
 }
 
-fn parse_and_create_steps(
-    project_state: &state::ProjectState,
-    phase_id: &str,
-    plan_output: &str,
-) -> Result<()> {
-    // Parse tracks and steps from the plan output
-    // Expected format:
-    //   ## TR01 — Track Title
-    //   ### ST01 — Step Title
-    //   (step plan content...)
-
+/// Parse tracks and steps from plan output, write plan files to disk, return track entries.
+fn parse_and_write_tracks(phase_id: &str, plan_output: &str) -> Result<Vec<state::TrackEntry>> {
     let track_re = Regex::new(r"(?m)^## (TR\d+)\s*[—-]\s*(.+)$")?;
     let step_re = Regex::new(r"(?m)^### (ST\d+)\s*[—-]\s*(.+)$")?;
 
-    let mut phases = project_state.phases.clone();
-    let mut phase_entry = state::PhaseEntry {
-        id: phase_id.to_string(),
-        title: format!("Phase {}", phase_id),
-        tracks: vec![],
-    };
-
+    let mut tracks = vec![];
     let track_matches: Vec<_> = track_re.find_iter(plan_output).collect();
 
     for (i, track_match) in track_matches.iter().enumerate() {
@@ -112,7 +190,6 @@ fn parse_and_create_steps(
         };
         let track_content = &plan_output[track_start..track_end];
 
-        // Create track directory
         let track_dir = state::track_dir(phase_id, &track_id);
         let steps_dir = track_dir.join("steps");
         fs::create_dir_all(&steps_dir)?;
@@ -123,7 +200,6 @@ fn parse_and_create_steps(
             steps: vec![],
         };
 
-        // Parse steps within this track
         let step_matches: Vec<_> = step_re.find_iter(track_content).collect();
 
         for (j, step_match) in step_matches.iter().enumerate() {
@@ -139,7 +215,6 @@ fn parse_and_create_steps(
             };
             let step_content = &track_content[step_start..step_end];
 
-            // Write PLAN.md for this step
             let plan_path = state::step_plan_path(phase_id, &track_id, &step_id);
             fs::write(&plan_path, step_content.trim())?;
 
@@ -152,13 +227,27 @@ fn parse_and_create_steps(
             });
         }
 
-        // Write track PLAN.md
         fs::write(track_dir.join("PLAN.md"), track_content.trim())?;
-
-        phase_entry.tracks.push(track_entry);
+        tracks.push(track_entry);
     }
 
-    // Update state with the new phase
+    Ok(tracks)
+}
+
+fn parse_and_create_steps(
+    project_state: &state::ProjectState,
+    phase_id: &str,
+    plan_output: &str,
+) -> Result<()> {
+    let new_tracks = parse_and_write_tracks(phase_id, plan_output)?;
+
+    let mut phases = project_state.phases.clone();
+    let phase_entry = state::PhaseEntry {
+        id: phase_id.to_string(),
+        title: format!("Phase {}", phase_id),
+        tracks: new_tracks,
+    };
+
     phases.retain(|p| p.id != phase_id);
     phases.push(phase_entry);
     phases.sort_by(|a, b| a.id.cmp(&b.id));

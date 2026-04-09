@@ -480,6 +480,67 @@ fn update_step_status(
     bail!("Step {}/{}/{} not found", phase_id, track_id, step_id)
 }
 
+/// Merge a re-plan into an existing phase, preserving completed/in-progress steps.
+///
+/// Rules:
+/// - Fully-complete tracks are kept as-is.
+/// - Partially-complete tracks: keep completed/in-progress steps, replace pending ones
+///   with new steps from the replan (if the track appears in new_tracks).
+/// - All-pending tracks: replaced entirely with the version from new_tracks, or dropped
+///   if not present in new_tracks.
+/// - Brand-new track IDs in new_tracks are appended.
+pub fn merge_replan(phase: &mut PhaseEntry, new_tracks: Vec<TrackEntry>) {
+    use std::collections::HashMap;
+
+    let mut new_track_map: HashMap<String, TrackEntry> =
+        new_tracks.into_iter().map(|t| (t.id.clone(), t)).collect();
+
+    let mut result: Vec<TrackEntry> = Vec::new();
+    let existing_ids: Vec<String> = phase.tracks.iter().map(|t| t.id.clone()).collect();
+
+    for existing in &phase.tracks {
+        let all_complete = !existing.steps.is_empty()
+            && existing.steps.iter().all(|s| s.status == StepStatus::Complete);
+        let has_complete_or_progress = existing.steps.iter().any(|s| {
+            s.status == StepStatus::Complete || s.status == StepStatus::InProgress
+        });
+
+        if all_complete {
+            // Fully done — preserve unchanged
+            result.push(existing.clone());
+        } else if has_complete_or_progress {
+            // Partial — keep completed/in-progress, append new pending from replan
+            let mut merged = existing.clone();
+            merged
+                .steps
+                .retain(|s| s.status == StepStatus::Complete || s.status == StepStatus::InProgress);
+            if let Some(new_track) = new_track_map.remove(&existing.id) {
+                for new_step in new_track.steps {
+                    merged.steps.push(new_step);
+                }
+                merged.title = new_track.title;
+            }
+            result.push(merged);
+        } else {
+            // All pending — replace with replan version, or drop if absent
+            if let Some(new_track) = new_track_map.remove(&existing.id) {
+                result.push(new_track);
+            }
+        }
+    }
+
+    // Append brand-new tracks (IDs not present in the existing phase)
+    for id in &existing_ids {
+        new_track_map.remove(id);
+    }
+    let mut new_additions: Vec<TrackEntry> = new_track_map.into_values().collect();
+    new_additions.sort_by(|a, b| a.id.cmp(&b.id));
+    result.extend(new_additions);
+
+    result.sort_by(|a, b| a.id.cmp(&b.id));
+    phase.tracks = result;
+}
+
 pub fn append_decision(message: &str) -> Result<()> {
     let path = decisions_path();
     let timestamp = Utc::now().format("%Y-%m-%d %H:%M UTC");
