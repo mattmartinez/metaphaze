@@ -2,23 +2,23 @@ use anyhow::Result;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
-use crate::{claude, events::EventSender, git, prompt, state, verifier};
+use crate::{claude, events, events::EventSender, git, prompt, state, verifier};
 
 pub fn run_next(project_state: &state::ProjectState, sender: Option<&EventSender>) -> Result<()> {
     match project_state.next_pending_step() {
         Some((phase_id, track_id, step_id)) => {
-            println!("Executing {}/{}/{}...\n", phase_id, track_id, step_id);
+            events::emit(sender, &format!("Executing {}/{}/{}...", phase_id, track_id, step_id));
             run_step(project_state, &phase_id, &track_id, &step_id, sender)?;
-            if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
+            if let Some(tx) = sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
             if let Err(e) = verifier::run_step(project_state, &phase_id, &track_id, &step_id, sender) {
-                eprintln!("Verification failed: {}", e);
+                events::emit(sender, &format!("Verification failed: {}", e));
             }
             state::mark_step_complete(&phase_id, &track_id, &step_id)?;
-            println!("\nStep complete.");
+            events::emit(sender, "Step complete.");
             Ok(())
         }
         None => {
-            println!("No pending steps.");
+            events::emit(sender, "No pending steps.");
             Ok(())
         }
     }
@@ -152,7 +152,7 @@ fn plan_track(
         return Ok(None);
     }
 
-    println!("Planning track {}/{}...", phase_id, track_id);
+    events::emit(sender, &format!("Planning track {}/{}...", phase_id, track_id));
 
     let project_md = state::read_project_md()?;
     let context = state::read_context(phase_id)?;

@@ -29,7 +29,7 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&
         .max_turns(60)
         .system_prompt(&sys_prompt);
 
-    println!("Generating phase plan...\n");
+    events::emit(sender, "Generating phase plan...");
     let result = claude::run(opts, sender)?;
 
     // Write ROADMAP.md
@@ -43,8 +43,8 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&
     // Advance current_phase if this phase is ahead of where we are
     state::advance_phase(phase_id)?;
 
-    println!("Plan written to {}/", ph_dir.display());
-    println!("\nReview the plan, then run `mz auto` to start execution.");
+    events::emit(sender, &format!("Plan written to {}/", ph_dir.display()));
+    events::emit(sender, "Review the plan, then run `mz auto` to start execution.");
     Ok(())
 }
 
@@ -123,7 +123,7 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
         .max_turns(40)
         .system_prompt(&sys_prompt);
 
-    println!("Re-planning remaining steps...\n");
+    events::emit(sender, "Re-planning remaining steps...");
     let result = claude::run(opts, sender)?;
 
     // Update ROADMAP.md with the re-plan
@@ -161,14 +161,14 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
         if ph.id == phase_id {
             state::merge_replan(ph, new_tracks);
             state::save(&new_state)?;
-            println!("\nRe-plan complete. ROADMAP.md updated.");
-            println!("Run `mz status --detail` to see the updated plan.");
+            events::emit(sender, "Re-plan complete. ROADMAP.md updated.");
+            events::emit(sender, "Run `mz status --detail` to see the updated plan.");
             return Ok(());
         }
     }
 
     // Phase not found in state yet — shouldn't happen after a steer, but handle gracefully
-    println!("\nWarning: phase {} not found in state; no merge performed.", phase_id);
+    events::emit(sender, &format!("Warning: phase {} not found in state; no merge performed.", phase_id));
     Ok(())
 }
 

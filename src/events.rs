@@ -22,3 +22,12 @@ pub type EventReceiver = mpsc::Receiver<ProgressEvent>;
 pub fn channel() -> (EventSender, EventReceiver) {
     mpsc::channel()
 }
+
+/// Send a message to the TUI output panel, or print to stdout if no TUI.
+pub fn emit(sender: Option<&EventSender>, msg: &str) {
+    if let Some(tx) = sender {
+        let _ = tx.send(ProgressEvent::ClaudeOutput { line: msg.to_string() });
+    } else {
+        println!("{}", msg);
+    }
+}

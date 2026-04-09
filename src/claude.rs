@@ -70,12 +70,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
     // Log what we're about to run
     let model_str = opts.model.as_deref().unwrap_or("default");
     let turns_str = opts.max_turns.map(|t| t.to_string()).unwrap_or_else(|| "∞".to_string());
-    eprintln!(
-        "{} model={} turns={}",
-        "  [claude]".dimmed(),
-        model_str.cyan(),
-        turns_str,
-    );
+    crate::events::emit(sender, &format!("[claude] model={} turns={}", model_str, turns_str));
 
     // Stream output: pipe stdout line-by-line so the user sees progress
     use std::io::{BufRead, BufReader};
@@ -202,11 +197,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
         bail!("No result event in stream-json output");
     }
 
-    eprintln!(
-        "{} done, {} bytes",
-        "  [claude]".dimmed(),
-        stdout.len(),
-    );
+    crate::events::emit(sender, &format!("[claude] done, {} bytes", stdout.len()));
 
     Ok(stdout)
 }

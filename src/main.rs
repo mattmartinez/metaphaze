@@ -301,11 +301,7 @@ fn cmd_auto(max_steps: Option<usize>, no_tui: bool) -> Result<()> {
 }
 
 fn emit_output(sender: &Option<events::EventSender>, msg: &str) {
-    if let Some(tx) = sender {
-        let _ = tx.send(events::ProgressEvent::ClaudeOutput { line: msg.to_string() });
-    } else {
-        println!("{}", msg);
-    }
+    events::emit(sender.as_ref(), msg);
 }
 
 fn cmd_auto_inner(
