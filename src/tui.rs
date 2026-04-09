@@ -85,6 +85,7 @@ pub enum OutputLine {
 }
 
 pub struct DashboardState {
+    pub phase_id: String,
     pub tracks: Vec<TrackInfo>,
     pub current_step: Option<StepInfo>,
     pub output_lines: VecDeque<OutputLine>,
@@ -139,6 +140,7 @@ impl DashboardState {
             .unwrap_or_default();
 
         DashboardState {
+            phase_id: phase_id.to_string(),
             tracks,
             current_step: None,
             output_lines: VecDeque::new(),
@@ -312,11 +314,29 @@ pub fn run_with_tui<F>(project_state: ProjectState, task: F) -> Result<()>
 where
     F: Fn(Option<EventSender>, Arc<AtomicBool>, Arc<AtomicBool>) -> Result<()> + Send + Sync + 'static,
 {
+    run_with_tui_phase(project_state, None, task)
+}
+
+pub fn run_with_tui_phase<F>(project_state: ProjectState, override_phase: Option<&str>, task: F) -> Result<()>
+where
+    F: Fn(Option<EventSender>, Arc<AtomicBool>, Arc<AtomicBool>) -> Result<()> + Send + Sync + 'static,
+{
     let task = Arc::new(task);
-    let phase_id = project_state.current_phase().to_string();
+    let phase_id = override_phase
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| project_state.current_phase().to_string());
 
     let (tx, rx) = crate::events::channel();
-    let dashboard = DashboardState::from_project_state(&project_state);
+    let mut dashboard = DashboardState::from_project_state(&project_state);
+    // Override displayed phase if specified
+    if let Some(pid) = override_phase {
+        dashboard.phase_id = pid.to_string();
+        // If the phase doesn't have tracks yet (e.g. planning), clear stale tracks
+        let has_phase = project_state.phases.iter().any(|p| p.id == pid);
+        if !has_phase {
+            dashboard.tracks.clear();
+        }
+    }
     let stop_signal = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(false));
     let mut app = init(dashboard, rx, Arc::clone(&stop_signal), Arc::clone(&paused))?;
@@ -591,10 +611,11 @@ impl App {
                 all_lines.push(fl);
             }
 
+            let phase_title = format!(" Tracks — {} ", dashboard.phase_id);
             let overview = Paragraph::new(all_lines)
                 .block(
                     Block::default()
-                        .title(" Tracks ")
+                        .title(phase_title)
                         .borders(Borders::ALL)
                         .border_style(border_style(&Panel::Tracks)),
                 )

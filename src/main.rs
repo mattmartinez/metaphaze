@@ -112,8 +112,9 @@ fn cmd_plan(phase: Option<String>, no_tui: bool) -> Result<()> {
     let phase_id = phase.unwrap_or_else(|| project_state.current_phase().to_string());
 
     if !no_tui && tui::is_interactive() {
+        let pid = phase_id.clone();
         let phase_id = std::sync::Arc::new(phase_id);
-        tui::run_with_tui(project_state, move |sender, stop, paused| {
+        tui::run_with_tui_phase(project_state, Some(&pid), move |sender, stop, paused| {
             cmd_plan_inner((*phase_id).clone(), sender, stop, paused)
         })
     } else {
