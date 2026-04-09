@@ -7,6 +7,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use unicode_width::UnicodeWidthStr;
 use crossterm::{
     event::{self, KeyCode},
     execute,
@@ -435,19 +436,28 @@ impl App {
             let term_size = self.terminal.size()?;
             let track_height = (self.dashboard.tracks.len() as u16 + 2).max(4).min(8);
             let middle_height = 4u16;
-            // Output inner height = total - track panel - middle panel - 2 (output borders)
-            let output_inner_height = term_size
-                .height
-                .saturating_sub(track_height)
-                .saturating_sub(middle_height)
-                .saturating_sub(2);
+            let footer_height = if self.dashboard.finished.is_some() { 1u16 } else { 0u16 };
+            let layout_chunks = Layout::vertical([
+                Constraint::Length(track_height),
+                Constraint::Length(middle_height),
+                Constraint::Min(5),
+                Constraint::Length(footer_height),
+            ])
+            .split(ratatui::layout::Rect::new(0, 0, term_size.width, term_size.height));
+            let output_inner_width = layout_chunks[2].width.saturating_sub(2);
+            let output_inner_height = layout_chunks[2].height.saturating_sub(2);
 
-            // TODO: wrapped line count for precise manual scroll
-            // With line wrapping enabled, long lines occupy multiple visual rows, so
-            // output_lines.len() underestimates the true visual height. Getting the exact
-            // wrapped count requires knowing the panel width at pre-compute time (complex).
-            // Auto-scroll still works correctly; manual scroll may slightly overestimate max.
-            let total = self.dashboard.output_lines.len() as u16;
+            let visual_line_count: u16 = self.dashboard.output_lines.iter().map(|line| {
+                let display_len = match line {
+                    OutputLine::Plain(s) | OutputLine::Assistant(s) | OutputLine::Label(s) => s.width(),
+                    OutputLine::ToolUse(s) => 3 + s.width(),
+                    OutputLine::ToolResult(s) => 4 + s.width(),
+                };
+                let w = output_inner_width as usize;
+                if w == 0 || display_len == 0 { 1u16 }
+                else { ((display_len + w - 1) / w) as u16 }
+            }).sum();
+            let total = visual_line_count;
             let max_scroll = total.saturating_sub(output_inner_height);
 
             // Clamp track scroll offset
