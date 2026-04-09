@@ -1,5 +1,6 @@
 mod claude;
 mod discuss;
+mod events;
 mod tui;
 mod executor;
 mod git;
@@ -109,23 +110,25 @@ fn cmd_plan(phase: Option<String>) -> Result<()> {
 
 fn cmd_next() -> Result<()> {
     let project_state = state::load()?;
-    executor::run_next(&project_state)
+    executor::run_next(&project_state, None)
 }
 
 fn cmd_auto(max_steps: Option<usize>) -> Result<()> {
     if tui::is_interactive() {
-        tui::run_with_tui(move || cmd_auto_inner(max_steps))
+        tui::run_with_tui(move || cmd_auto_inner(max_steps, None))
     } else {
-        cmd_auto_inner(max_steps)
+        cmd_auto_inner(max_steps, None)
     }
 }
 
-fn cmd_auto_inner(max_steps: Option<usize>) -> Result<()> {
+fn cmd_auto_inner(max_steps: Option<usize>, sender: Option<events::EventSender>) -> Result<()> {
     use std::collections::HashMap;
 
     let limit = max_steps.unwrap_or(usize::MAX);
     let mut completed = 0;
+    let mut blocked = 0;
     let mut retries: HashMap<String, u32> = HashMap::new();
+    let mut phase_started = false;
 
     println!("Starting autonomous execution...\n");
 
@@ -137,9 +140,56 @@ fn cmd_auto_inner(max_steps: Option<usize>) -> Result<()> {
 
         let project_state = state::load()?;
 
+        if !phase_started {
+            phase_started = true;
+            if let Some(tx) = &sender {
+                let phase_id = project_state.current_phase().to_string();
+                let current_phase = project_state.phases.iter().find(|p| p.id == phase_id);
+                let total_tracks = current_phase.map(|p| p.tracks.len()).unwrap_or(0);
+                let total_steps = current_phase
+                    .map(|p| p.tracks.iter().map(|t| t.steps.len()).sum())
+                    .unwrap_or(0);
+                let _ = tx.send(events::ProgressEvent::PhaseStarted {
+                    phase_id,
+                    total_tracks,
+                    total_steps,
+                });
+            }
+        }
+
         match project_state.next_pending_step() {
             Some((phase_id, track_id, step_id)) => {
                 println!("━━━ {}/{}/{} ━━━", phase_id, track_id, step_id);
+
+                if let Some(tx) = &sender {
+                    let step_title = project_state
+                        .phases
+                        .iter()
+                        .find(|p| p.id == phase_id)
+                        .and_then(|p| p.tracks.iter().find(|t| t.id == track_id))
+                        .and_then(|t| {
+                            t.steps.iter().enumerate().find(|(_, s)| s.id == step_id)
+                        })
+                        .map(|(i, s)| (i + 1, s.title.clone(), {
+                            project_state
+                                .phases
+                                .iter()
+                                .find(|p| p.id == phase_id)
+                                .and_then(|p| p.tracks.iter().find(|t| t.id == track_id))
+                                .map(|t| t.steps.len())
+                                .unwrap_or(0)
+                        }));
+                    if let Some((step_num, title, total)) = step_title {
+                        let _ = tx.send(events::ProgressEvent::StepStarted {
+                            phase_id: phase_id.clone(),
+                            track_id: track_id.clone(),
+                            step_id: step_id.clone(),
+                            step_title: title,
+                            step_num,
+                            total_steps: total,
+                        });
+                    }
+                }
 
                 let key = format!("{}/{}", track_id, step_id);
                 // Seed from persisted attempts on first encounter (supports restart recovery)
@@ -147,10 +197,19 @@ fn cmd_auto_inner(max_steps: Option<usize>) -> Result<()> {
                     .entry(key.clone())
                     .or_insert_with(|| project_state.step_attempts(&phase_id, &track_id, &step_id));
 
-                if let Err(e) = executor::run_step(&project_state, &phase_id, &track_id, &step_id) {
+                if let Err(e) = executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
                     eprintln!("Step failed: {}", e);
                     *count += 1;
                     state::increment_step_attempts(&phase_id, &track_id, &step_id)?;
+
+                    if let Some(tx) = &sender {
+                        let _ = tx.send(events::ProgressEvent::StepFailed {
+                            phase_id: phase_id.clone(),
+                            track_id: track_id.clone(),
+                            step_id: step_id.clone(),
+                            error: e.to_string(),
+                        });
+                    }
 
                     if *count >= 3 {
                         eprintln!("Step {} failed after 3 attempts. Marking blocked.", step_id);
@@ -160,6 +219,7 @@ fn cmd_auto_inner(max_steps: Option<usize>) -> Result<()> {
                             &step_id,
                             "Failed after 3 retries",
                         )?;
+                        blocked += 1;
                     } else {
                         eprintln!("Retrying {} (attempt {}/3)", step_id, count);
                         // Step remains InProgress; loop will pick it up again
@@ -174,6 +234,14 @@ fn cmd_auto_inner(max_steps: Option<usize>) -> Result<()> {
                 state::mark_step_complete(&phase_id, &track_id, &step_id)?;
                 completed += 1;
 
+                if let Some(tx) = &sender {
+                    let _ = tx.send(events::ProgressEvent::StepCompleted {
+                        phase_id: phase_id.clone(),
+                        track_id: track_id.clone(),
+                        step_id: step_id.clone(),
+                    });
+                }
+
                 let updated = state::load()?;
                 if updated.is_track_complete(&phase_id, &track_id) {
                     println!("\nTrack {} complete. Running track verification...", track_id);
@@ -183,6 +251,12 @@ fn cmd_auto_inner(max_steps: Option<usize>) -> Result<()> {
                     if let Err(e) = git::merge_track(&phase_id, &track_id) {
                         eprintln!("Git merge issue: {}", e);
                     }
+                    if let Some(tx) = &sender {
+                        let _ = tx.send(events::ProgressEvent::TrackCompleted {
+                            phase_id: phase_id.clone(),
+                            track_id: track_id.clone(),
+                        });
+                    }
                 }
             }
             None => {
@@ -190,6 +264,10 @@ fn cmd_auto_inner(max_steps: Option<usize>) -> Result<()> {
                 break;
             }
         }
+    }
+
+    if let Some(tx) = &sender {
+        let _ = tx.send(events::ProgressEvent::ExecutionFinished { completed, blocked });
     }
 
     println!("\nCompleted {} steps.", completed);

@@ -1,12 +1,12 @@
 use anyhow::Result;
 
-use crate::{claude, git, prompt, state, verifier};
+use crate::{claude, events::EventSender, git, prompt, state, verifier};
 
-pub fn run_next(project_state: &state::ProjectState) -> Result<()> {
+pub fn run_next(project_state: &state::ProjectState, sender: Option<&EventSender>) -> Result<()> {
     match project_state.next_pending_step() {
         Some((phase_id, track_id, step_id)) => {
             println!("Executing {}/{}/{}...\n", phase_id, track_id, step_id);
-            run_step(project_state, &phase_id, &track_id, &step_id)?;
+            run_step(project_state, &phase_id, &track_id, &step_id, sender)?;
             if let Err(e) = verifier::run_step(project_state, &phase_id, &track_id, &step_id) {
                 eprintln!("Verification failed: {}", e);
             }
@@ -26,6 +26,7 @@ pub fn run_step(
     phase_id: &str,
     track_id: &str,
     step_id: &str,
+    sender: Option<&EventSender>,
 ) -> Result<()> {
     state::mark_step_in_progress(phase_id, track_id, step_id)?;
 
@@ -33,7 +34,7 @@ pub fn run_step(
     git::create_track_branch(phase_id, track_id)?;
 
     // Plan the track before executing the first step
-    plan_track(project_state, phase_id, track_id, step_id)?;
+    plan_track(project_state, phase_id, track_id, step_id, sender)?;
 
     // Gather context
     let project_md = state::read_project_md()?;
@@ -78,10 +79,10 @@ pub fn run_step(
         .max_turns(50)
         .system_prompt(&sys_prompt);
 
-    let _result = claude::run(opts)?;
+    let _result = claude::run(opts, sender)?;
 
     // Summarize what was done before committing
-    summarize_step(phase_id, track_id, step_id)?;
+    summarize_step(phase_id, track_id, step_id, sender)?;
 
     // Commit the work
     git::commit_step(phase_id, track_id, step_id, &step_title)?;
@@ -121,6 +122,7 @@ fn plan_track(
     phase_id: &str,
     track_id: &str,
     step_id: &str,
+    sender: Option<&EventSender>,
 ) -> Result<()> {
     if !is_first_step_of_track(project_state, phase_id, track_id, step_id) {
         return Ok(());
@@ -154,11 +156,11 @@ fn plan_track(
         .max_turns(30)
         .system_prompt(&sys_prompt);
 
-    claude::run(opts)?;
+    claude::run(opts, sender)?;
     Ok(())
 }
 
-fn summarize_step(phase_id: &str, track_id: &str, step_id: &str) -> Result<()> {
+fn summarize_step(phase_id: &str, track_id: &str, step_id: &str, sender: Option<&EventSender>) -> Result<()> {
     let step_plan = state::read_step_plan(phase_id, track_id, step_id)?;
     let summary_path = state::step_summary_path(phase_id, track_id, step_id);
 
@@ -181,6 +183,6 @@ fn summarize_step(phase_id: &str, track_id: &str, step_id: &str) -> Result<()> {
         .max_turns(20)
         .system_prompt(&sys_prompt);
 
-    claude::run(opts)?;
+    claude::run(opts, sender)?;
     Ok(())
 }

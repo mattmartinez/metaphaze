@@ -30,7 +30,7 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str) -> Result<()> {
         .system_prompt(&sys_prompt);
 
     println!("Generating phase plan...\n");
-    let result = claude::run(opts)?;
+    let result = claude::run(opts, None)?;
 
     // Write ROADMAP.md
     let ph_dir = state::phase_dir(phase_id);
@@ -121,7 +121,7 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
         .system_prompt(&sys_prompt);
 
     println!("Re-planning remaining steps...\n");
-    let result = claude::run(opts)?;
+    let result = claude::run(opts, None)?;
 
     // Update ROADMAP.md with the re-plan
     let roadmap_content = format!(

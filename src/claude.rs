@@ -2,6 +2,8 @@ use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use std::process::Command;
 
+use crate::events::EventSender;
+
 pub struct ClaudeOptions {
     pub prompt: String,
     pub model: Option<String>,
@@ -37,7 +39,7 @@ impl ClaudeOptions {
     }
 }
 
-pub fn run(opts: ClaudeOptions) -> Result<String> {
+pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> {
     let claude_bin = find_claude()?;
 
     let mut cmd = Command::new(&claude_bin);
@@ -105,7 +107,11 @@ pub fn run(opts: ClaudeOptions) -> Result<String> {
     for line in reader.lines() {
         match line {
             Ok(line) => {
-                eprintln!("  {}", line.dimmed());
+                if let Some(tx) = sender {
+                    let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: line.clone() });
+                } else {
+                    eprintln!("  {}", line.dimmed());
+                }
                 stdout.push_str(&line);
                 stdout.push('\n');
             }

@@ -30,7 +30,7 @@ pub fn run_step(
         .max_turns(30);
 
     println!("  Verifying {}/{}...", track_id, step_id);
-    let result = claude::run(opts)?;
+    let result = claude::run(opts, None)?;
 
     // Write verification result
     let verify_path = state::track_dir(phase_id, track_id)
@@ -82,7 +82,7 @@ pub fn run_track(
         .max_turns(40);
 
     println!("Running end-to-end track verification...");
-    let result = claude::run(opts)?;
+    let result = claude::run(opts, None)?;
 
     // Write track verification
     let verify_path = state::track_dir(phase_id, track_id).join("VERIFICATION.md");
