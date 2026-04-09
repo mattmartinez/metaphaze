@@ -115,7 +115,8 @@ fn cmd_next() -> Result<()> {
 
 fn cmd_auto(max_steps: Option<usize>) -> Result<()> {
     if tui::is_interactive() {
-        tui::run_with_tui(move || cmd_auto_inner(max_steps, None))
+        let project_state = state::load()?;
+        tui::run_with_tui(project_state, move |sender| cmd_auto_inner(max_steps, sender))
     } else {
         cmd_auto_inner(max_steps, None)
     }
