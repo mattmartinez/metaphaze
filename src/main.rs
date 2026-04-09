@@ -130,16 +130,9 @@ fn cmd_plan_inner(
     let project_state = state::load()?;
 
     if let Some(tx) = &sender {
-        let _ = tx.send(events::ProgressEvent::PhaseStarted {
-            phase_id: phase_id.clone(),
-            total_tracks: 0,
-            total_steps: 0,
-        });
+        let _ = tx.send(events::ProgressEvent::PhaseStarted);
         let _ = tx.send(events::ProgressEvent::StepStarted {
-            phase_id: phase_id.clone(),
             track_id: String::new(),
-            step_id: "plan".to_string(),
-            step_title: format!("Planning phase {}...", phase_id),
             step_num: 1,
             total_steps: 1,
         });
@@ -151,9 +144,7 @@ fn cmd_plan_inner(
         Ok(()) => {
             if let Some(tx) = &sender {
                 let _ = tx.send(events::ProgressEvent::StepCompleted {
-                    phase_id: phase_id.clone(),
                     track_id: String::new(),
-                    step_id: "plan".to_string(),
                 });
                 let _ = tx.send(events::ProgressEvent::ExecutionFinished {
                     completed: 1,
@@ -165,10 +156,7 @@ fn cmd_plan_inner(
         Err(e) => {
             if let Some(tx) = &sender {
                 let _ = tx.send(events::ProgressEvent::StepFailed {
-                    phase_id: phase_id.clone(),
                     track_id: String::new(),
-                    step_id: "plan".to_string(),
-                    error: e.to_string(),
                 });
                 let _ = tx.send(events::ProgressEvent::ExecutionFinished {
                     completed: 0,
@@ -202,17 +190,7 @@ fn cmd_next_inner(
     let project_state = state::load()?;
 
     if let Some(tx) = &sender {
-        let phase_id = project_state.current_phase().to_string();
-        let current_phase = project_state.phases.iter().find(|p| p.id == phase_id);
-        let total_tracks = current_phase.map(|p| p.tracks.len()).unwrap_or(0);
-        let total_steps = current_phase
-            .map(|p| p.tracks.iter().map(|t| t.steps.len()).sum())
-            .unwrap_or(0);
-        let _ = tx.send(events::ProgressEvent::PhaseStarted {
-            phase_id,
-            total_tracks,
-            total_steps,
-        });
+        let _ = tx.send(events::ProgressEvent::PhaseStarted);
     }
 
     match project_state.next_pending_step() {
@@ -248,12 +226,9 @@ fn cmd_next_inner(
                             .unwrap_or(0);
                         (i + 1, s.title.clone(), total)
                     });
-                if let Some((step_num, title, total)) = step_title {
+                if let Some((step_num, _title, total)) = step_title {
                     let _ = tx.send(events::ProgressEvent::StepStarted {
-                        phase_id: phase_id.clone(),
                         track_id: track_id.clone(),
-                        step_id: step_id.clone(),
-                        step_title: title,
                         step_num,
                         total_steps: total,
                     });
@@ -273,9 +248,7 @@ fn cmd_next_inner(
                     println!("\nStep complete.");
                     if let Some(tx) = &sender {
                         let _ = tx.send(events::ProgressEvent::StepCompleted {
-                            phase_id: phase_id.clone(),
                             track_id: track_id.clone(),
-                            step_id: step_id.clone(),
                         });
                     }
                     (1, 0)
@@ -284,10 +257,7 @@ fn cmd_next_inner(
                     eprintln!("Step failed: {}", e);
                     if let Some(tx) = &sender {
                         let _ = tx.send(events::ProgressEvent::StepFailed {
-                            phase_id: phase_id.clone(),
                             track_id: track_id.clone(),
-                            step_id: step_id.clone(),
-                            error: e.to_string(),
                         });
                     }
                     (0, 1)
@@ -370,17 +340,7 @@ fn cmd_auto_inner(
         if !phase_started {
             phase_started = true;
             if let Some(tx) = &sender {
-                let phase_id = project_state.current_phase().to_string();
-                let current_phase = project_state.phases.iter().find(|p| p.id == phase_id);
-                let total_tracks = current_phase.map(|p| p.tracks.len()).unwrap_or(0);
-                let total_steps = current_phase
-                    .map(|p| p.tracks.iter().map(|t| t.steps.len()).sum())
-                    .unwrap_or(0);
-                let _ = tx.send(events::ProgressEvent::PhaseStarted {
-                    phase_id,
-                    total_tracks,
-                    total_steps,
-                });
+                let _ = tx.send(events::ProgressEvent::PhaseStarted);
             }
         }
 
@@ -406,12 +366,9 @@ fn cmd_auto_inner(
                                 .map(|t| t.steps.len())
                                 .unwrap_or(0)
                         }));
-                    if let Some((step_num, title, total)) = step_title {
+                    if let Some((step_num, _title, total)) = step_title {
                         let _ = tx.send(events::ProgressEvent::StepStarted {
-                            phase_id: phase_id.clone(),
                             track_id: track_id.clone(),
-                            step_id: step_id.clone(),
-                            step_title: title,
                             step_num,
                             total_steps: total,
                         });
@@ -431,10 +388,7 @@ fn cmd_auto_inner(
 
                     if let Some(tx) = &sender {
                         let _ = tx.send(events::ProgressEvent::StepFailed {
-                            phase_id: phase_id.clone(),
                             track_id: track_id.clone(),
-                            step_id: step_id.clone(),
-                            error: e.to_string(),
                         });
                     }
 
@@ -463,9 +417,7 @@ fn cmd_auto_inner(
 
                 if let Some(tx) = &sender {
                     let _ = tx.send(events::ProgressEvent::StepCompleted {
-                        phase_id: phase_id.clone(),
                         track_id: track_id.clone(),
-                        step_id: step_id.clone(),
                     });
                 }
 
@@ -480,7 +432,6 @@ fn cmd_auto_inner(
                     }
                     if let Some(tx) = &sender {
                         let _ = tx.send(events::ProgressEvent::TrackCompleted {
-                            phase_id: phase_id.clone(),
                             track_id: track_id.clone(),
                         });
                     }

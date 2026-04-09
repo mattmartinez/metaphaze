@@ -63,10 +63,7 @@ pub struct TrackInfo {
 
 #[derive(Debug, Clone)]
 pub struct StepInfo {
-    pub phase_id: String,
     pub track_id: String,
-    pub step_id: String,
-    pub title: String,
     pub step_num: usize,
     pub total_steps: usize,
     pub started_at: Instant,
@@ -139,19 +136,10 @@ impl DashboardState {
 
     pub fn update(&mut self, event: ProgressEvent) {
         match event {
-            ProgressEvent::PhaseStarted { .. } => {}
-
-            ProgressEvent::TrackStarted { track_id, .. } => {
-                if let Some(t) = self.tracks.iter_mut().find(|t| t.id == track_id) {
-                    t.status = TrackStatus::Active;
-                }
-            }
+            ProgressEvent::PhaseStarted => {}
 
             ProgressEvent::StepStarted {
-                phase_id,
                 track_id,
-                step_id,
-                step_title,
                 step_num,
                 total_steps,
             } => {
@@ -159,10 +147,7 @@ impl DashboardState {
                     t.status = TrackStatus::Active;
                 }
                 self.current_step = Some(StepInfo {
-                    phase_id,
                     track_id,
-                    step_id,
-                    title: step_title,
                     step_num,
                     total_steps,
                     started_at: Instant::now(),

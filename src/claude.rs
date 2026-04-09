@@ -149,7 +149,7 @@ pub fn run_interactive(system_prompt: &str, initial_prompt: &str) -> Result<()> 
 
     let mut cmd = Command::new(&claude_bin);
     cmd.arg("--append-system-prompt").arg(system_prompt);
-    cmd.arg("--permission-mode").arg("acceptEdits");
+    cmd.arg("--dangerously-skip-permissions");
     cmd.arg(initial_prompt);
 
     // Inherit stdin/stdout/stderr so the user interacts directly
