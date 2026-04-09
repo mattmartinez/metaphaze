@@ -47,6 +47,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
 
     cmd.arg("-p").arg(&opts.prompt);
     cmd.arg("--permission-mode").arg("acceptEdits");
+    cmd.arg("--verbose");
     cmd.arg("--output-format").arg("stream-json");
 
     if let Some(model) = &opts.model {
@@ -157,8 +158,8 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                             eprintln!("  {} {}", "⚠".red(), error.red());
                         }
                     }
-                    Some(StreamEvent::System { .. }) => {
-                        // Ignore system-level events
+                    Some(StreamEvent::User { .. }) | Some(StreamEvent::System { .. }) => {
+                        // Ignore user/system-level events
                     }
                     None => {
                         fallback_lines.push(line);

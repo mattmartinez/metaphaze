@@ -12,29 +12,35 @@ pub enum StreamEvent {
     /// Claude is invoking a tool.
     ToolUse {
         tool: String,
-        input: Value,
+        #[serde(rename = "input")]
+        _input: Value,
     },
     /// Result returned from a tool invocation.
     ToolResult {
         tool: String,
-        #[serde(default)]
-        content: Option<String>,
-        #[serde(default)]
-        output: Option<String>,
+        #[serde(default, rename = "content")]
+        _content: Option<String>,
+        #[serde(default, rename = "output")]
+        _output: Option<String>,
     },
     /// Final event — contains the assembled response and run metadata.
     Result {
         result: String,
-        #[serde(default)]
-        cost_usd: Option<f64>,
-        #[serde(default)]
-        duration_ms: Option<u64>,
-        #[serde(default)]
-        num_turns: Option<u32>,
+        #[serde(default, rename = "cost_usd")]
+        _cost_usd: Option<f64>,
+        #[serde(default, rename = "duration_ms")]
+        _duration_ms: Option<u64>,
+        #[serde(default, rename = "num_turns")]
+        _num_turns: Option<u32>,
     },
     /// An error occurred during the run.
     Error {
         error: String,
+    },
+    /// User message (tool results sent back to Claude — ignored for display).
+    User {
+        #[serde(flatten)]
+        _extra: Value,
     },
     /// System-level message (ignored for display).
     System {
@@ -67,8 +73,8 @@ pub fn parse_stream_line(line: &str) -> Option<StreamEvent> {
     }
     match serde_json::from_str::<StreamEvent>(trimmed) {
         Ok(event) => Some(event),
-        Err(e) => {
-            eprintln!("[stream] parse warning: {} — line: {}", e, &trimmed[..trimmed.len().min(120)]);
+        Err(_) => {
+            // Silently ignore unknown event types (rate_limit_event, etc.)
             None
         }
     }
