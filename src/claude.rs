@@ -127,6 +127,9 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                             }
                         }
                     }
+                    Some(StreamEvent::ContentBlockDelta { .. }) => {
+                        // Token-level delta — handled in future step (ST02)
+                    }
                     Some(StreamEvent::ToolUse { tool, .. }) => {
                         if let Some(tx) = sender {
                             let _ = tx.send(crate::events::ProgressEvent::ToolUseStarted { tool: tool.clone() });
