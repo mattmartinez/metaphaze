@@ -405,7 +405,7 @@ impl App {
         // Pre-compute scroll offsets using terminal size.
         {
             let term_size = self.terminal.size()?;
-            let track_height = (self.dashboard.tracks.len() as u16 + 2).max(4);
+            let track_height = (self.dashboard.tracks.len() as u16 + 2).max(4).min(8);
             let middle_height = 4u16;
             // Output inner height = total - track panel - middle panel - 2 (output borders)
             let output_inner_height = term_size
@@ -416,6 +416,12 @@ impl App {
 
             let total = self.dashboard.output_lines.len() as u16;
             let max_scroll = total.saturating_sub(output_inner_height);
+
+            // Clamp track scroll offset
+            let max_track_scroll = self.dashboard.tracks.len().saturating_sub(6);
+            if self.dashboard.track_scroll_offset as usize > max_track_scroll {
+                self.dashboard.track_scroll_offset = max_track_scroll as u16;
+            }
 
             if !self.dashboard.user_scrolled {
                 // Auto-scroll to bottom
@@ -437,7 +443,7 @@ impl App {
             let area = frame.area();
 
             // Four vertical chunks: top=track overview, middle=step progress, bottom=output, footer=status
-            let track_height = (tracks.len() as u16 + 2).max(4); // borders + content
+            let track_height = (tracks.len() as u16 + 2).max(4).min(8); // borders + content, capped at 8
             let footer_height = if finished.is_some() { 1u16 } else { 0u16 };
             let chunks = Layout::vertical([
                 Constraint::Length(track_height),
@@ -460,21 +466,40 @@ impl App {
             let track_lines: Vec<Line> = tracks
                 .iter()
                 .map(|t| {
-                    let (icon, color) = match t.status {
-                        TrackStatus::Done => ("✓", Color::Green),
-                        TrackStatus::Active => ("▶", Color::Yellow),
-                        TrackStatus::Pending => ("○", Color::DarkGray),
-                        TrackStatus::Blocked => ("✗", Color::Red),
-                    };
-                    let progress = match t.status {
-                        TrackStatus::Blocked => format!(" ({}/{})", t.steps_done, t.steps_total),
-                        _ => format!(" ({}/{})", t.steps_done, t.steps_total),
+                    let progress = format!(" ({}/{})", t.steps_done, t.steps_total);
+                    let (icon_span, text_span) = match t.status {
+                        TrackStatus::Done => (
+                            Span::styled(" ✓ ", Style::default().fg(Color::Green)),
+                            Span::styled(
+                                format!("{} — {}", t.id, t.title),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ),
+                        TrackStatus::Active => (
+                            Span::styled(" ▶ ", Style::default().fg(Color::Yellow)),
+                            Span::styled(
+                                format!("{} — {}", t.id, t.title),
+                                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                            ),
+                        ),
+                        TrackStatus::Pending => (
+                            Span::styled(" ○ ", Style::default().fg(Color::DarkGray)),
+                            Span::styled(
+                                format!("{} — {}", t.id, t.title),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ),
+                        TrackStatus::Blocked => (
+                            Span::styled(" ✗ ", Style::default().fg(Color::Red)),
+                            Span::styled(
+                                format!("{} — {}", t.id, t.title),
+                                Style::default().fg(Color::Red),
+                            ),
+                        ),
                     };
                     Line::from(vec![
-                        Span::styled(
-                            format!(" {} {} — {}", icon, t.id, t.title),
-                            Style::default().fg(color),
-                        ),
+                        icon_span,
+                        text_span,
                         Span::styled(progress, Style::default().fg(Color::DarkGray)),
                     ])
                 })
