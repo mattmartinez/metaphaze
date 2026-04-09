@@ -420,6 +420,15 @@ pub fn read_context(phase_id: &str) -> Result<String> {
     }
 }
 
+pub fn read_track_plan(phase_id: &str, track_id: &str) -> Result<String> {
+    let path = track_dir(phase_id, track_id).join("PLAN.md");
+    if path.exists() {
+        Ok(fs::read_to_string(path)?)
+    } else {
+        Ok(String::new())
+    }
+}
+
 pub fn read_step_plan(phase_id: &str, track_id: &str, step_id: &str) -> Result<String> {
     let path = step_plan_path(phase_id, track_id, step_id);
     fs::read_to_string(&path).with_context(|| format!("Failed to read step plan: {}", path.display()))

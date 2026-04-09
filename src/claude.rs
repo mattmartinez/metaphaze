@@ -63,51 +63,72 @@ pub fn run(opts: ClaudeOptions) -> Result<String> {
     }
 
     // Log what we're about to run
-    eprintln!("{} binary={}", "  [claude]".dimmed(), claude_bin.dimmed());
     let model_str = opts.model.as_deref().unwrap_or("default");
     let turns_str = opts.max_turns.map(|t| t.to_string()).unwrap_or_else(|| "∞".to_string());
-    let prompt_preview: String = opts.prompt.chars().take(80).collect();
-    let prompt_preview = if opts.prompt.len() > 80 {
-        format!("{}...", prompt_preview)
-    } else {
-        prompt_preview
-    };
-
     eprintln!(
-        "{} model={} turns={} prompt={}",
+        "{} model={} turns={}",
         "  [claude]".dimmed(),
         model_str.cyan(),
         turns_str,
-        prompt_preview.dimmed(),
     );
 
-    let output = cmd
-        .output()
+    // Stream output: pipe stdout line-by-line so the user sees progress
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
         .with_context(|| format!("Failed to spawn claude at {}", claude_bin))?;
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let child_stdout = child.stdout.take().unwrap();
+    let child_stderr = child.stderr.take().unwrap();
 
-    if !stderr.is_empty() {
-        for line in stderr.lines() {
-            eprintln!("{} {}", "  [claude]".dimmed(), line.dimmed());
+    // Read stderr in a background thread
+    let stderr_handle = std::thread::spawn(move || {
+        let reader = BufReader::new(child_stderr);
+        let mut stderr = String::new();
+        for line in reader.lines() {
+            if let Ok(line) = line {
+                stderr.push_str(&line);
+                stderr.push('\n');
+            }
+        }
+        stderr
+    });
+
+    // Stream stdout to terminal and capture it
+    let mut stdout = String::new();
+    let reader = BufReader::new(child_stdout);
+    for line in reader.lines() {
+        match line {
+            Ok(line) => {
+                eprintln!("  {}", line.dimmed());
+                stdout.push_str(&line);
+                stdout.push('\n');
+            }
+            Err(e) => eprintln!("{} read error: {}", "  [claude]".dimmed(), e),
         }
     }
 
-    if !output.status.success() {
+    let status = child.wait().context("Failed to wait for claude")?;
+    let stderr = stderr_handle.join().unwrap_or_default();
+
+    if !status.success() {
         let combined = if stderr.is_empty() {
-            format!("claude exited with {} (no stderr output)\nstdout: {}", output.status, &stdout[..stdout.len().min(500)])
+            format!("claude exited with {} (no stderr)\nstdout: {}", status, &stdout[..stdout.len().min(500)])
         } else {
-            format!("claude exited with {}: {}", output.status, stderr.trim())
+            format!("claude exited with {}: {}", status, stderr.trim())
         };
         bail!("{}", combined);
     }
 
-    let stdout_len = stdout.len();
     eprintln!(
-        "{} done, {} bytes of output",
+        "{} done, {} bytes",
         "  [claude]".dimmed(),
-        stdout_len,
+        stdout.len(),
     );
 
     Ok(stdout)
