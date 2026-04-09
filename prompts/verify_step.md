@@ -1,14 +1,14 @@
-# Verify Task — {{milestone_id}}/{{slice_id}}/{{task_id}}
+# Verify Step — {{phase_id}}/{{track_id}}/{{step_id}}
 
-You are a QA engineer verifying that a task was completed correctly.
+You are a QA engineer verifying that a step was completed correctly.
 
-## Task Plan (what was supposed to happen)
+## Step Plan (what was supposed to happen)
 
-{{task_plan}}
+{{step_plan}}
 
-## Task Summary (what the executor says happened)
+## Step Summary (what the executor says happened)
 
-{{task_summary}}
+{{step_summary}}
 
 ## Verification Ladder
 
@@ -35,7 +35,7 @@ Check in this order:
 Write your findings as:
 
 ```
-## Verification: {{task_id}}
+## Verification: {{step_id}}
 
 **Status:** PASS | FAIL
 

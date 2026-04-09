@@ -24,29 +24,29 @@ enum Commands {
 
     /// Deep interactive discussion to capture decisions and resolve ambiguity
     Discuss {
-        /// Milestone to discuss (e.g., M001). Defaults to current.
-        milestone: Option<String>,
+        /// Phase to discuss (e.g., P001). Defaults to current.
+        phase: Option<String>,
     },
 
-    /// Decompose current milestone into slices and tasks
+    /// Decompose current phase into tracks and steps
     Plan {
-        /// Milestone to plan (e.g., M001). Defaults to current.
-        milestone: Option<String>,
+        /// Phase to plan (e.g., P001). Defaults to current.
+        phase: Option<String>,
     },
 
-    /// Execute the next pending task
+    /// Execute the next pending step
     Next,
 
-    /// Autonomous loop — execute all tasks until milestone complete or blocked
+    /// Autonomous loop — execute all steps until phase complete or blocked
     Auto {
-        /// Maximum tasks to execute before stopping
+        /// Maximum steps to execute before stopping
         #[arg(long)]
-        max_tasks: Option<usize>,
+        max_steps: Option<usize>,
     },
 
     /// Show current progress
     Status {
-        /// Show task-level detail
+        /// Show step-level detail
         #[arg(long)]
         detail: bool,
     },
@@ -63,10 +63,10 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init => cmd_init(),
-        Commands::Discuss { milestone } => cmd_discuss(milestone),
-        Commands::Plan { milestone } => cmd_plan(milestone),
+        Commands::Discuss { phase } => cmd_discuss(phase),
+        Commands::Plan { phase } => cmd_plan(phase),
         Commands::Next => cmd_next(),
-        Commands::Auto { max_tasks } => cmd_auto(max_tasks),
+        Commands::Auto { max_steps } => cmd_auto(max_steps),
         Commands::Status { detail } => cmd_status(detail),
         Commands::Steer { message } => cmd_steer(message),
     }
@@ -78,22 +78,22 @@ fn cmd_init() -> Result<()> {
     println!("\nProject initialized at .mz/");
     println!("  PROJECT.md  — your project definition");
     println!("  STATE.md    — current state dashboard");
-    println!("\nNext: run `mz discuss` to capture decisions, then `mz plan` to decompose into tasks.");
+    println!("\nNext: run `mz discuss` to capture decisions, then `mz plan` to decompose into steps.");
     Ok(())
 }
 
-fn cmd_discuss(milestone: Option<String>) -> Result<()> {
+fn cmd_discuss(phase: Option<String>) -> Result<()> {
     let project_state = state::load()?;
-    let milestone_id = milestone.unwrap_or_else(|| project_state.current_milestone().to_string());
-    println!("Starting discussion for {}...\n", milestone_id);
-    discuss::run(&project_state, &milestone_id)
+    let phase_id = phase.unwrap_or_else(|| project_state.current_phase().to_string());
+    println!("Starting discussion for {}...\n", phase_id);
+    discuss::run(&project_state, &phase_id)
 }
 
-fn cmd_plan(milestone: Option<String>) -> Result<()> {
+fn cmd_plan(phase: Option<String>) -> Result<()> {
     let project_state = state::load()?;
-    let milestone_id = milestone.unwrap_or_else(|| project_state.current_milestone().to_string());
-    println!("Planning {}...\n", milestone_id);
-    planner::run(&project_state, &milestone_id)
+    let phase_id = phase.unwrap_or_else(|| project_state.current_phase().to_string());
+    println!("Planning {}...\n", phase_id);
+    planner::run(&project_state, &phase_id)
 }
 
 fn cmd_next() -> Result<()> {
@@ -101,56 +101,56 @@ fn cmd_next() -> Result<()> {
     executor::run_next(&project_state)
 }
 
-fn cmd_auto(max_tasks: Option<usize>) -> Result<()> {
-    let limit = max_tasks.unwrap_or(usize::MAX);
+fn cmd_auto(max_steps: Option<usize>) -> Result<()> {
+    let limit = max_steps.unwrap_or(usize::MAX);
     let mut completed = 0;
 
     println!("Starting autonomous execution...\n");
 
     loop {
         if completed >= limit {
-            println!("\nReached task limit ({}). Stopping.", limit);
+            println!("\nReached step limit ({}). Stopping.", limit);
             break;
         }
 
         let project_state = state::load()?;
 
-        match project_state.next_pending_task() {
-            Some((milestone_id, slice_id, task_id)) => {
-                println!("━━━ {}/{}/{} ━━━", milestone_id, slice_id, task_id);
+        match project_state.next_pending_step() {
+            Some((phase_id, track_id, step_id)) => {
+                println!("━━━ {}/{}/{} ━━━", phase_id, track_id, step_id);
 
-                if let Err(e) = executor::run_task(&project_state, &milestone_id, &slice_id, &task_id) {
-                    eprintln!("Task failed: {}", e);
-                    state::mark_task_blocked(&milestone_id, &slice_id, &task_id, &format!("{e}"))?;
+                if let Err(e) = executor::run_step(&project_state, &phase_id, &track_id, &step_id) {
+                    eprintln!("Step failed: {}", e);
+                    state::mark_step_blocked(&phase_id, &track_id, &step_id, &format!("{e}"))?;
                     continue;
                 }
 
-                if let Err(e) = verifier::run_task(&project_state, &milestone_id, &slice_id, &task_id) {
+                if let Err(e) = verifier::run_step(&project_state, &phase_id, &track_id, &step_id) {
                     eprintln!("Verification failed: {}", e);
                 }
 
-                state::mark_task_complete(&milestone_id, &slice_id, &task_id)?;
+                state::mark_step_complete(&phase_id, &track_id, &step_id)?;
                 completed += 1;
 
                 let updated = state::load()?;
-                if updated.is_slice_complete(&milestone_id, &slice_id) {
-                    println!("\nSlice {} complete. Running slice verification...", slice_id);
-                    if let Err(e) = verifier::run_slice(&updated, &milestone_id, &slice_id) {
-                        eprintln!("Slice verification issue: {}", e);
+                if updated.is_track_complete(&phase_id, &track_id) {
+                    println!("\nTrack {} complete. Running track verification...", track_id);
+                    if let Err(e) = verifier::run_track(&updated, &phase_id, &track_id) {
+                        eprintln!("Track verification issue: {}", e);
                     }
-                    if let Err(e) = git::merge_slice(&milestone_id, &slice_id) {
+                    if let Err(e) = git::merge_track(&phase_id, &track_id) {
                         eprintln!("Git merge issue: {}", e);
                     }
                 }
             }
             None => {
-                println!("\nNo pending tasks. Milestone complete or all remaining tasks blocked.");
+                println!("\nNo pending steps. Phase complete or all remaining steps blocked.");
                 break;
             }
         }
     }
 
-    println!("\nCompleted {} tasks.", completed);
+    println!("\nCompleted {} steps.", completed);
     Ok(())
 }
 
@@ -164,7 +164,7 @@ fn cmd_steer(message: String) -> Result<()> {
     println!("Recording decision...\n");
     state::append_decision(&message)?;
 
-    let milestone_id = project_state.current_milestone().to_string();
-    println!("Re-planning remaining tasks in {}...", milestone_id);
-    planner::replan(&project_state, &milestone_id, &message)
+    let phase_id = project_state.current_phase().to_string();
+    println!("Re-planning remaining steps in {}...", phase_id);
+    planner::replan(&project_state, &phase_id, &message)
 }

@@ -9,16 +9,16 @@ use std::path::PathBuf;
 const MZ_DIR: &str = ".mz";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TaskEntry {
+pub struct StepEntry {
     pub id: String,
     pub title: String,
-    pub status: TaskStatus,
+    pub status: StepStatus,
     pub blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum TaskStatus {
+pub enum StepStatus {
     Pending,
     InProgress,
     Complete,
@@ -26,41 +26,41 @@ pub enum TaskStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SliceEntry {
+pub struct TrackEntry {
     pub id: String,
     pub title: String,
-    pub tasks: Vec<TaskEntry>,
+    pub steps: Vec<StepEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MilestoneEntry {
+pub struct PhaseEntry {
     pub id: String,
     pub title: String,
-    pub slices: Vec<SliceEntry>,
+    pub tracks: Vec<TrackEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectState {
     pub name: String,
     pub description: String,
-    pub current_milestone: String,
-    pub milestones: Vec<MilestoneEntry>,
+    pub current_phase: String,
+    pub phases: Vec<PhaseEntry>,
 }
 
 impl ProjectState {
-    pub fn current_milestone(&self) -> &str {
-        &self.current_milestone
+    pub fn current_phase(&self) -> &str {
+        &self.current_phase
     }
 
-    pub fn next_pending_task(&self) -> Option<(String, String, String)> {
-        for ms in &self.milestones {
-            if ms.id != self.current_milestone {
+    pub fn next_pending_step(&self) -> Option<(String, String, String)> {
+        for ph in &self.phases {
+            if ph.id != self.current_phase {
                 continue;
             }
-            for slice in &ms.slices {
-                for task in &slice.tasks {
-                    if task.status == TaskStatus::Pending {
-                        return Some((ms.id.clone(), slice.id.clone(), task.id.clone()));
+            for track in &ph.tracks {
+                for step in &track.steps {
+                    if step.status == StepStatus::Pending {
+                        return Some((ph.id.clone(), track.id.clone(), step.id.clone()));
                     }
                 }
             }
@@ -68,16 +68,16 @@ impl ProjectState {
         None
     }
 
-    pub fn is_slice_complete(&self, milestone_id: &str, slice_id: &str) -> bool {
-        for ms in &self.milestones {
-            if ms.id != milestone_id {
+    pub fn is_track_complete(&self, phase_id: &str, track_id: &str) -> bool {
+        for ph in &self.phases {
+            if ph.id != phase_id {
                 continue;
             }
-            for slice in &ms.slices {
-                if slice.id != slice_id {
+            for track in &ph.tracks {
+                if track.id != track_id {
                     continue;
                 }
-                return slice.tasks.iter().all(|t| t.status == TaskStatus::Complete);
+                return track.steps.iter().all(|s| s.status == StepStatus::Complete);
             }
         }
         false
@@ -88,15 +88,15 @@ impl ProjectState {
         let mut done = 0;
         let mut blocked = 0;
         let mut in_progress = 0;
-        for ms in &self.milestones {
-            for slice in &ms.slices {
-                for task in &slice.tasks {
+        for ph in &self.phases {
+            for track in &ph.tracks {
+                for step in &track.steps {
                     total += 1;
-                    match task.status {
-                        TaskStatus::Complete => done += 1,
-                        TaskStatus::Blocked => blocked += 1,
-                        TaskStatus::InProgress => in_progress += 1,
-                        TaskStatus::Pending => {}
+                    match step.status {
+                        StepStatus::Complete => done += 1,
+                        StepStatus::Blocked => blocked += 1,
+                        StepStatus::InProgress => in_progress += 1,
+                        StepStatus::Pending => {}
                     }
                 }
             }
@@ -126,36 +126,36 @@ pub fn mz_root() -> PathBuf {
     mz_dir()
 }
 
-pub fn milestones_dir() -> PathBuf {
-    mz_dir().join("milestones")
+pub fn phases_dir() -> PathBuf {
+    mz_dir().join("phases")
 }
 
-pub fn milestone_dir(milestone_id: &str) -> PathBuf {
-    milestones_dir().join(milestone_id)
+pub fn phase_dir(phase_id: &str) -> PathBuf {
+    phases_dir().join(phase_id)
 }
 
-pub fn slice_dir(milestone_id: &str, slice_id: &str) -> PathBuf {
-    milestone_dir(milestone_id).join("slices").join(slice_id)
+pub fn track_dir(phase_id: &str, track_id: &str) -> PathBuf {
+    phase_dir(phase_id).join("tracks").join(track_id)
 }
 
-pub fn task_plan_path(milestone_id: &str, slice_id: &str, task_id: &str) -> PathBuf {
-    slice_dir(milestone_id, slice_id)
-        .join("tasks")
-        .join(format!("{}-PLAN.md", task_id))
+pub fn step_plan_path(phase_id: &str, track_id: &str, step_id: &str) -> PathBuf {
+    track_dir(phase_id, track_id)
+        .join("steps")
+        .join(format!("{}-PLAN.md", step_id))
 }
 
-pub fn task_summary_path(milestone_id: &str, slice_id: &str, task_id: &str) -> PathBuf {
-    slice_dir(milestone_id, slice_id)
-        .join("tasks")
-        .join(format!("{}-SUMMARY.md", task_id))
+pub fn step_summary_path(phase_id: &str, track_id: &str, step_id: &str) -> PathBuf {
+    track_dir(phase_id, track_id)
+        .join("steps")
+        .join(format!("{}-SUMMARY.md", step_id))
 }
 
-pub fn context_path(milestone_id: &str) -> PathBuf {
-    milestone_dir(milestone_id).join("CONTEXT.md")
+pub fn context_path(phase_id: &str) -> PathBuf {
+    phase_dir(phase_id).join("CONTEXT.md")
 }
 
-pub fn roadmap_path(milestone_id: &str) -> PathBuf {
-    milestone_dir(milestone_id).join("ROADMAP.md")
+pub fn roadmap_path(phase_id: &str) -> PathBuf {
+    phase_dir(phase_id).join("ROADMAP.md")
 }
 
 pub fn init_project() -> Result<ProjectState> {
@@ -182,7 +182,7 @@ pub fn init_project() -> Result<ProjectState> {
 
     // Create directory structure
     fs::create_dir_all(mz_dir())?;
-    fs::create_dir_all(milestones_dir())?;
+    fs::create_dir_all(phases_dir())?;
 
     // Write PROJECT.md
     let project_md = format!(
@@ -205,8 +205,8 @@ pub fn init_project() -> Result<ProjectState> {
     let state = ProjectState {
         name: name.clone(),
         description: description.clone(),
-        current_milestone: "M001".to_string(),
-        milestones: vec![],
+        current_phase: "P001".to_string(),
+        phases: vec![],
     };
     save(&state)?;
 
@@ -229,57 +229,57 @@ pub fn save(state: &ProjectState) -> Result<()> {
     Ok(())
 }
 
-pub fn mark_task_complete(milestone_id: &str, slice_id: &str, task_id: &str) -> Result<()> {
+pub fn mark_step_complete(phase_id: &str, track_id: &str, step_id: &str) -> Result<()> {
     let mut state = load()?;
-    update_task_status(&mut state, milestone_id, slice_id, task_id, TaskStatus::Complete, None)?;
+    update_step_status(&mut state, phase_id, track_id, step_id, StepStatus::Complete, None)?;
     save(&state)
 }
 
-pub fn mark_task_blocked(milestone_id: &str, slice_id: &str, task_id: &str, reason: &str) -> Result<()> {
+pub fn mark_step_blocked(phase_id: &str, track_id: &str, step_id: &str, reason: &str) -> Result<()> {
     let mut state = load()?;
-    update_task_status(
+    update_step_status(
         &mut state,
-        milestone_id,
-        slice_id,
-        task_id,
-        TaskStatus::Blocked,
+        phase_id,
+        track_id,
+        step_id,
+        StepStatus::Blocked,
         Some(reason.to_string()),
     )?;
     save(&state)
 }
 
-pub fn mark_task_in_progress(milestone_id: &str, slice_id: &str, task_id: &str) -> Result<()> {
+pub fn mark_step_in_progress(phase_id: &str, track_id: &str, step_id: &str) -> Result<()> {
     let mut state = load()?;
-    update_task_status(&mut state, milestone_id, slice_id, task_id, TaskStatus::InProgress, None)?;
+    update_step_status(&mut state, phase_id, track_id, step_id, StepStatus::InProgress, None)?;
     save(&state)
 }
 
-fn update_task_status(
+fn update_step_status(
     state: &mut ProjectState,
-    milestone_id: &str,
-    slice_id: &str,
-    task_id: &str,
-    status: TaskStatus,
+    phase_id: &str,
+    track_id: &str,
+    step_id: &str,
+    status: StepStatus,
     blocked_reason: Option<String>,
 ) -> Result<()> {
-    for ms in &mut state.milestones {
-        if ms.id != milestone_id {
+    for ph in &mut state.phases {
+        if ph.id != phase_id {
             continue;
         }
-        for slice in &mut ms.slices {
-            if slice.id != slice_id {
+        for track in &mut ph.tracks {
+            if track.id != track_id {
                 continue;
             }
-            for task in &mut slice.tasks {
-                if task.id == task_id {
-                    task.status = status;
-                    task.blocked_reason = blocked_reason;
+            for step in &mut track.steps {
+                if step.id == step_id {
+                    step.status = status;
+                    step.blocked_reason = blocked_reason;
                     return Ok(());
                 }
             }
         }
     }
-    bail!("Task {}/{}/{} not found", milestone_id, slice_id, task_id)
+    bail!("Step {}/{}/{} not found", phase_id, track_id, step_id)
 }
 
 pub fn append_decision(message: &str) -> Result<()> {
@@ -306,8 +306,8 @@ pub fn read_decisions() -> Result<String> {
     }
 }
 
-pub fn read_context(milestone_id: &str) -> Result<String> {
-    let path = context_path(milestone_id);
+pub fn read_context(phase_id: &str) -> Result<String> {
+    let path = context_path(phase_id);
     if path.exists() {
         Ok(fs::read_to_string(path)?)
     } else {
@@ -315,13 +315,13 @@ pub fn read_context(milestone_id: &str) -> Result<String> {
     }
 }
 
-pub fn read_task_plan(milestone_id: &str, slice_id: &str, task_id: &str) -> Result<String> {
-    let path = task_plan_path(milestone_id, slice_id, task_id);
-    fs::read_to_string(&path).with_context(|| format!("Failed to read task plan: {}", path.display()))
+pub fn read_step_plan(phase_id: &str, track_id: &str, step_id: &str) -> Result<String> {
+    let path = step_plan_path(phase_id, track_id, step_id);
+    fs::read_to_string(&path).with_context(|| format!("Failed to read step plan: {}", path.display()))
 }
 
-pub fn read_task_summary(milestone_id: &str, slice_id: &str, task_id: &str) -> Result<String> {
-    let path = task_summary_path(milestone_id, slice_id, task_id);
+pub fn read_step_summary(phase_id: &str, track_id: &str, step_id: &str) -> Result<String> {
+    let path = step_summary_path(phase_id, track_id, step_id);
     if path.exists() {
         Ok(fs::read_to_string(path)?)
     } else {
@@ -331,30 +331,30 @@ pub fn read_task_summary(milestone_id: &str, slice_id: &str, task_id: &str) -> R
 
 pub fn collect_dependency_summaries(
     state: &ProjectState,
-    milestone_id: &str,
-    slice_id: &str,
-    task_id: &str,
+    phase_id: &str,
+    track_id: &str,
+    step_id: &str,
 ) -> Result<String> {
     let mut summaries = String::new();
 
-    for ms in &state.milestones {
-        if ms.id != milestone_id {
+    for ph in &state.phases {
+        if ph.id != phase_id {
             continue;
         }
-        for slice in &ms.slices {
-            if slice.id != slice_id {
+        for track in &ph.tracks {
+            if track.id != track_id {
                 continue;
             }
-            for task in &slice.tasks {
-                if task.id == task_id {
+            for step in &track.steps {
+                if step.id == step_id {
                     break;
                 }
-                if task.status == TaskStatus::Complete {
-                    let summary = read_task_summary(milestone_id, slice_id, &task.id)?;
+                if step.status == StepStatus::Complete {
+                    let summary = read_step_summary(phase_id, track_id, &step.id)?;
                     if !summary.is_empty() {
                         summaries.push_str(&format!(
                             "\n### {} — {}\n\n{}\n",
-                            task.id, task.title, summary
+                            step.id, step.title, summary
                         ));
                     }
                 }
@@ -370,10 +370,10 @@ pub fn print_status(state: &ProjectState, detail: bool) -> Result<()> {
     let pending = total.saturating_sub(done + in_progress + blocked);
 
     println!("{}", format!("Project: {}", state.name).bold());
-    println!("Current milestone: {}\n", state.current_milestone);
+    println!("Current phase: {}\n", state.current_phase);
 
     if total == 0 {
-        println!("No tasks yet. Run `mz plan` to decompose into tasks.");
+        println!("No steps yet. Run `mz plan` to decompose into steps.");
         return Ok(());
     }
 
@@ -390,40 +390,40 @@ pub fn print_status(state: &ProjectState, detail: bool) -> Result<()> {
         format!("{}", blocked).red(),
     );
 
-    for ms in &state.milestones {
-        println!("{}", format!("{} — {}", ms.id, ms.title).bold());
-        for slice in &ms.slices {
-            let slice_done = slice.tasks.iter().filter(|t| t.status == TaskStatus::Complete).count();
-            let slice_total = slice.tasks.len();
-            let marker = if slice_done == slice_total && slice_total > 0 {
+    for ph in &state.phases {
+        println!("{}", format!("{} — {}", ph.id, ph.title).bold());
+        for track in &ph.tracks {
+            let track_done = track.steps.iter().filter(|s| s.status == StepStatus::Complete).count();
+            let track_total = track.steps.len();
+            let marker = if track_done == track_total && track_total > 0 {
                 "✓".green().to_string()
             } else {
                 "○".normal().to_string()
             };
-            println!("  {} {} — {} ({}/{})", marker, slice.id, slice.title, slice_done, slice_total);
+            println!("  {} {} — {} ({}/{})", marker, track.id, track.title, track_done, track_total);
 
             if detail {
-                for task in &slice.tasks {
-                    let icon = match task.status {
-                        TaskStatus::Complete => "  ✓".green().to_string(),
-                        TaskStatus::InProgress => "  ▶".yellow().to_string(),
-                        TaskStatus::Blocked => "  ✗".red().to_string(),
-                        TaskStatus::Pending => "  ○".normal().to_string(),
+                for step in &track.steps {
+                    let icon = match step.status {
+                        StepStatus::Complete => "  ✓".green().to_string(),
+                        StepStatus::InProgress => "  ▶".yellow().to_string(),
+                        StepStatus::Blocked => "  ✗".red().to_string(),
+                        StepStatus::Pending => "  ○".normal().to_string(),
                     };
-                    let suffix = match &task.blocked_reason {
+                    let suffix = match &step.blocked_reason {
                         Some(r) => format!(" ({})", r).red().to_string(),
                         None => String::new(),
                     };
-                    println!("  {} {} — {}{}", icon, task.id, task.title, suffix);
+                    println!("  {} {} — {}{}", icon, step.id, step.title, suffix);
                 }
             }
         }
         println!();
     }
 
-    // Show next task
-    if let Some((ms, sl, tk)) = state.next_pending_task() {
-        println!("{}", format!("Next: {}/{}/{}", ms, sl, tk).cyan());
+    // Show next step
+    if let Some((ph, tr, st)) = state.next_pending_step() {
+        println!("{}", format!("Next: {}/{}/{}", ph, tr, st).cyan());
     }
 
     Ok(())

@@ -1,19 +1,19 @@
-# Verify Slice — {{milestone_id}}/{{slice_id}}
+# Verify Track — {{phase_id}}/{{track_id}}
 
-You are a senior engineer doing end-to-end verification of a completed slice (a demoable vertical feature).
+You are a senior engineer doing end-to-end verification of a completed track (a demoable vertical feature).
 
-## All Task Plans
+## All Step Plans
 
 {{all_plans}}
 
-## All Task Summaries
+## All Step Summaries
 
 {{all_summaries}}
 
 ## Verification Checklist
 
-1. **Integration**: Do all the tasks work together? Read the actual code and verify the pieces connect.
-2. **Completeness**: Was everything in the slice plan actually delivered?
+1. **Integration**: Do all the steps work together? Read the actual code and verify the pieces connect.
+2. **Completeness**: Was everything in the track plan actually delivered?
 3. **Regressions**: Run the full test suite. Anything broken?
 4. **Quality**: Any obvious code smells, security issues, or performance concerns?
 5. **Demo-readiness**: Could you demonstrate this feature to a stakeholder?
@@ -21,7 +21,7 @@ You are a senior engineer doing end-to-end verification of a completed slice (a 
 ## Output
 
 ```markdown
-# Slice Verification: {{slice_id}}
+# Track Verification: {{track_id}}
 
 **Status:** PASS | FAIL
 

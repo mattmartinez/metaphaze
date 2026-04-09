@@ -10,8 +10,8 @@ pub fn current_branch() -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-pub fn create_slice_branch(milestone_id: &str, slice_id: &str) -> Result<()> {
-    let branch = format!("mz/{}/{}", milestone_id, slice_id);
+pub fn create_track_branch(phase_id: &str, track_id: &str) -> Result<()> {
+    let branch = format!("mz/{}/{}", phase_id, track_id);
     let output = Command::new("git")
         .args(["checkout", "-b", &branch])
         .output()
@@ -30,7 +30,7 @@ pub fn create_slice_branch(milestone_id: &str, slice_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn commit_task(milestone_id: &str, slice_id: &str, task_id: &str, title: &str) -> Result<()> {
+pub fn commit_step(phase_id: &str, track_id: &str, step_id: &str, title: &str) -> Result<()> {
     // Stage all changes
     Command::new("git")
         .args(["add", "-A"])
@@ -47,7 +47,7 @@ pub fn commit_task(milestone_id: &str, slice_id: &str, task_id: &str, title: &st
         return Ok(());
     }
 
-    let message = format!("{}/{}/{}: {}", milestone_id, slice_id, task_id, title);
+    let message = format!("{}/{}/{}: {}", phase_id, track_id, step_id, title);
     Command::new("git")
         .args(["commit", "-m", &message])
         .output()
@@ -56,8 +56,8 @@ pub fn commit_task(milestone_id: &str, slice_id: &str, task_id: &str, title: &st
     Ok(())
 }
 
-pub fn merge_slice(milestone_id: &str, slice_id: &str) -> Result<()> {
-    let branch = format!("mz/{}/{}", milestone_id, slice_id);
+pub fn merge_track(phase_id: &str, track_id: &str) -> Result<()> {
+    let branch = format!("mz/{}/{}", phase_id, track_id);
 
     // Switch to main
     Command::new("git")
@@ -76,7 +76,7 @@ pub fn merge_slice(milestone_id: &str, slice_id: &str) -> Result<()> {
         anyhow::bail!("Merge failed: {}", stderr);
     }
 
-    let message = format!("feat({}/{}): slice complete", milestone_id, slice_id);
+    let message = format!("feat({}/{}): track complete", phase_id, track_id);
     Command::new("git")
         .args(["commit", "-m", &message])
         .output()

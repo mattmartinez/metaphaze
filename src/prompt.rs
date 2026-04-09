@@ -4,11 +4,11 @@ use std::collections::HashMap;
 #[allow(dead_code)]
 pub mod templates {
     pub const DISCUSS: &str = include_str!("../prompts/discuss.md");
-    pub const PLAN_MILESTONE: &str = include_str!("../prompts/plan_milestone.md");
-    pub const PLAN_SLICE: &str = include_str!("../prompts/plan_slice.md");
-    pub const EXECUTE_TASK: &str = include_str!("../prompts/execute_task.md");
-    pub const VERIFY_TASK: &str = include_str!("../prompts/verify_task.md");
-    pub const VERIFY_SLICE: &str = include_str!("../prompts/verify_slice.md");
+    pub const PLAN_PHASE: &str = include_str!("../prompts/plan_phase.md");
+    pub const PLAN_TRACK: &str = include_str!("../prompts/plan_track.md");
+    pub const EXECUTE_STEP: &str = include_str!("../prompts/execute_step.md");
+    pub const VERIFY_STEP: &str = include_str!("../prompts/verify_step.md");
+    pub const VERIFY_TRACK: &str = include_str!("../prompts/verify_track.md");
     pub const SUMMARIZE: &str = include_str!("../prompts/summarize.md");
 }
 

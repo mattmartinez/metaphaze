@@ -4,24 +4,24 @@ use std::fs;
 
 use crate::{claude, prompt, state};
 
-pub fn run(project_state: &state::ProjectState, milestone_id: &str) -> Result<()> {
+pub fn run(project_state: &state::ProjectState, phase_id: &str) -> Result<()> {
     let project_md = state::read_project_md()?;
     let decisions = state::read_decisions()?;
-    let context = state::read_context(milestone_id)?;
+    let context = state::read_context(phase_id)?;
 
     let mut vars = prompt::vars();
     prompt::set(&mut vars, "project", &project_md);
     prompt::set(&mut vars, "decisions", &decisions);
     prompt::set(&mut vars, "context", &context);
-    prompt::set(&mut vars, "milestone_id", milestone_id);
+    prompt::set(&mut vars, "phase_id", phase_id);
 
-    let rendered = prompt::render(prompt::templates::PLAN_MILESTONE, &vars);
+    let rendered = prompt::render(prompt::templates::PLAN_PHASE, &vars);
 
     let sys_prompt = format!(
-        "You are a senior software architect planning milestone {} for '{}'. \
-         Decompose the work into slices (demoable vertical features) and tasks \
+        "You are a senior software architect planning phase {} for '{}'. \
+         Decompose the work into tracks (demoable vertical features) and steps \
          (single-context-window units of work). Output the plan in the exact format specified.",
-        milestone_id, project_state.name,
+        phase_id, project_state.name,
     );
 
     let opts = claude::ClaudeOptions::new(rendered)
@@ -29,26 +29,26 @@ pub fn run(project_state: &state::ProjectState, milestone_id: &str) -> Result<()
         .max_turns(60)
         .system_prompt(&sys_prompt);
 
-    println!("Generating milestone plan...\n");
+    println!("Generating phase plan...\n");
     let result = claude::run(opts)?;
 
     // Write ROADMAP.md
-    let ms_dir = state::milestone_dir(milestone_id);
-    fs::create_dir_all(&ms_dir)?;
-    fs::write(state::roadmap_path(milestone_id), &result)?;
+    let ph_dir = state::phase_dir(phase_id);
+    fs::create_dir_all(&ph_dir)?;
+    fs::write(state::roadmap_path(phase_id), &result)?;
 
-    // Parse the plan output and create task files + update state
-    parse_and_create_tasks(project_state, milestone_id, &result)?;
+    // Parse the plan output and create step files + update state
+    parse_and_create_steps(project_state, phase_id, &result)?;
 
-    println!("Plan written to {}/", ms_dir.display());
+    println!("Plan written to {}/", ph_dir.display());
     println!("\nReview the plan, then run `mz auto` to start execution.");
     Ok(())
 }
 
-pub fn replan(project_state: &state::ProjectState, milestone_id: &str, decision: &str) -> Result<()> {
+pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &str) -> Result<()> {
     let project_md = state::read_project_md()?;
     let decisions = state::read_decisions()?;
-    let context = state::read_context(milestone_id)?;
+    let context = state::read_context(phase_id)?;
 
     // Gather current state for context
     let current_state = serde_yaml::to_string(project_state)?;
@@ -60,10 +60,10 @@ pub fn replan(project_state: &state::ProjectState, milestone_id: &str, decision:
          ## Current State\n\n```yaml\n{}\n```\n\n\
          ## Decisions\n\n{}\n\n\
          ## Context\n\n{}\n\n\
-         Re-plan the REMAINING (pending) tasks for milestone {}. \
-         Keep completed tasks as-is. Output updated task plans for any \
-         tasks that need to change. Use the same format as the original plan.",
-        decision, project_md, current_state, decisions, context, milestone_id,
+         Re-plan the REMAINING (pending) steps for phase {}. \
+         Keep completed steps as-is. Output updated step plans for any \
+         steps that need to change. Use the same format as the original plan.",
+        decision, project_md, current_state, decisions, context, phase_id,
     );
 
     let opts = claude::ClaudeOptions::new(prompt_text)
@@ -76,94 +76,94 @@ pub fn replan(project_state: &state::ProjectState, milestone_id: &str, decision:
     Ok(())
 }
 
-fn parse_and_create_tasks(
+fn parse_and_create_steps(
     project_state: &state::ProjectState,
-    milestone_id: &str,
+    phase_id: &str,
     plan_output: &str,
 ) -> Result<()> {
-    // Parse slices and tasks from the plan output
+    // Parse tracks and steps from the plan output
     // Expected format:
-    //   ## S01 — Slice Title
-    //   ### T01 — Task Title
-    //   (task plan content...)
+    //   ## TR01 — Track Title
+    //   ### ST01 — Step Title
+    //   (step plan content...)
 
-    let slice_re = Regex::new(r"(?m)^## (S\d+)\s*[—-]\s*(.+)$")?;
-    let task_re = Regex::new(r"(?m)^### (T\d+)\s*[—-]\s*(.+)$")?;
+    let track_re = Regex::new(r"(?m)^## (TR\d+)\s*[—-]\s*(.+)$")?;
+    let step_re = Regex::new(r"(?m)^### (ST\d+)\s*[—-]\s*(.+)$")?;
 
-    let mut milestones = project_state.milestones.clone();
-    let mut milestone_entry = state::MilestoneEntry {
-        id: milestone_id.to_string(),
-        title: format!("Milestone {}", milestone_id),
-        slices: vec![],
+    let mut phases = project_state.phases.clone();
+    let mut phase_entry = state::PhaseEntry {
+        id: phase_id.to_string(),
+        title: format!("Phase {}", phase_id),
+        tracks: vec![],
     };
 
-    let slice_matches: Vec<_> = slice_re.find_iter(plan_output).collect();
+    let track_matches: Vec<_> = track_re.find_iter(plan_output).collect();
 
-    for (i, slice_match) in slice_matches.iter().enumerate() {
-        let caps = slice_re.captures(slice_match.as_str()).unwrap();
-        let slice_id = caps[1].to_string();
-        let slice_title = caps[2].trim().to_string();
+    for (i, track_match) in track_matches.iter().enumerate() {
+        let caps = track_re.captures(track_match.as_str()).unwrap();
+        let track_id = caps[1].to_string();
+        let track_title = caps[2].trim().to_string();
 
-        let slice_start = slice_match.start();
-        let slice_end = if i + 1 < slice_matches.len() {
-            slice_matches[i + 1].start()
+        let track_start = track_match.start();
+        let track_end = if i + 1 < track_matches.len() {
+            track_matches[i + 1].start()
         } else {
             plan_output.len()
         };
-        let slice_content = &plan_output[slice_start..slice_end];
+        let track_content = &plan_output[track_start..track_end];
 
-        // Create slice directory
-        let slice_dir = state::slice_dir(milestone_id, &slice_id);
-        let tasks_dir = slice_dir.join("tasks");
-        fs::create_dir_all(&tasks_dir)?;
+        // Create track directory
+        let track_dir = state::track_dir(phase_id, &track_id);
+        let steps_dir = track_dir.join("steps");
+        fs::create_dir_all(&steps_dir)?;
 
-        let mut slice_entry = state::SliceEntry {
-            id: slice_id.clone(),
-            title: slice_title.clone(),
-            tasks: vec![],
+        let mut track_entry = state::TrackEntry {
+            id: track_id.clone(),
+            title: track_title.clone(),
+            steps: vec![],
         };
 
-        // Parse tasks within this slice
-        let task_matches: Vec<_> = task_re.find_iter(slice_content).collect();
+        // Parse steps within this track
+        let step_matches: Vec<_> = step_re.find_iter(track_content).collect();
 
-        for (j, task_match) in task_matches.iter().enumerate() {
-            let tcaps = task_re.captures(task_match.as_str()).unwrap();
-            let task_id = tcaps[1].to_string();
-            let task_title = tcaps[2].trim().to_string();
+        for (j, step_match) in step_matches.iter().enumerate() {
+            let scaps = step_re.captures(step_match.as_str()).unwrap();
+            let step_id = scaps[1].to_string();
+            let step_title = scaps[2].trim().to_string();
 
-            let task_start = task_match.start();
-            let task_end = if j + 1 < task_matches.len() {
-                task_matches[j + 1].start()
+            let step_start = step_match.start();
+            let step_end = if j + 1 < step_matches.len() {
+                step_matches[j + 1].start()
             } else {
-                slice_content.len()
+                track_content.len()
             };
-            let task_content = &slice_content[task_start..task_end];
+            let step_content = &track_content[step_start..step_end];
 
-            // Write PLAN.md for this task
-            let plan_path = state::task_plan_path(milestone_id, &slice_id, &task_id);
-            fs::write(&plan_path, task_content.trim())?;
+            // Write PLAN.md for this step
+            let plan_path = state::step_plan_path(phase_id, &track_id, &step_id);
+            fs::write(&plan_path, step_content.trim())?;
 
-            slice_entry.tasks.push(state::TaskEntry {
-                id: task_id,
-                title: task_title,
-                status: state::TaskStatus::Pending,
+            track_entry.steps.push(state::StepEntry {
+                id: step_id,
+                title: step_title,
+                status: state::StepStatus::Pending,
                 blocked_reason: None,
             });
         }
 
-        // Write slice PLAN.md
-        fs::write(slice_dir.join("PLAN.md"), slice_content.trim())?;
+        // Write track PLAN.md
+        fs::write(track_dir.join("PLAN.md"), track_content.trim())?;
 
-        milestone_entry.slices.push(slice_entry);
+        phase_entry.tracks.push(track_entry);
     }
 
-    // Update state with the new milestone
-    milestones.retain(|m| m.id != milestone_id);
-    milestones.push(milestone_entry);
-    milestones.sort_by(|a, b| a.id.cmp(&b.id));
+    // Update state with the new phase
+    phases.retain(|p| p.id != phase_id);
+    phases.push(phase_entry);
+    phases.sort_by(|a, b| a.id.cmp(&b.id));
 
     let mut new_state = project_state.clone();
-    new_state.milestones = milestones;
+    new_state.phases = phases;
     state::save(&new_state)?;
 
     Ok(())
