@@ -1,4 +1,6 @@
 use anyhow::Result;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 
 use crate::{claude, events::EventSender, git, prompt, state, verifier};
 
@@ -33,8 +35,19 @@ pub fn run_step(
     // Ensure we're on the right branch
     git::create_track_branch(phase_id, track_id)?;
 
+    // Prepare log file (truncate/create fresh for this step execution)
+    let log_path = state::step_output_log_path(phase_id, track_id, step_id);
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    // Truncate on first write by creating the file
+    fs::write(&log_path, "")?;
+
     // Plan the track before executing the first step
-    plan_track(project_state, phase_id, track_id, step_id, sender)?;
+    let plan_output = plan_track(project_state, phase_id, track_id, step_id, sender)?;
+    if let Some(output) = plan_output {
+        append_to_log(&log_path, "--- track planning ---\n", &output);
+    }
 
     // Gather context
     let project_md = state::read_project_md()?;
@@ -79,10 +92,17 @@ pub fn run_step(
         .max_turns(50)
         .system_prompt(&sys_prompt);
 
-    let _result = claude::run(opts, sender)?;
+    let step_output = claude::run(opts, sender);
+    // Write step output to log even if it failed
+    match &step_output {
+        Ok(output) => append_to_log(&log_path, "--- step execution ---\n", output),
+        Err(e) => append_to_log(&log_path, "--- step execution (failed) ---\n", &e.to_string()),
+    }
+    let _result = step_output?;
 
     // Summarize what was done before committing
-    summarize_step(phase_id, track_id, step_id, sender)?;
+    let summary_output = summarize_step(phase_id, track_id, step_id, sender)?;
+    append_to_log(&log_path, "--- summarization ---\n", &summary_output);
 
     // Commit the work
     git::commit_step(phase_id, track_id, step_id, &step_title)?;
@@ -123,9 +143,9 @@ fn plan_track(
     track_id: &str,
     step_id: &str,
     sender: Option<&EventSender>,
-) -> Result<()> {
+) -> Result<Option<String>> {
     if !is_first_step_of_track(project_state, phase_id, track_id, step_id) {
-        return Ok(());
+        return Ok(None);
     }
 
     println!("Planning track {}/{}...", phase_id, track_id);
@@ -156,11 +176,11 @@ fn plan_track(
         .max_turns(30)
         .system_prompt(&sys_prompt);
 
-    claude::run(opts, sender)?;
-    Ok(())
+    let output = claude::run(opts, sender)?;
+    Ok(Some(output))
 }
 
-fn summarize_step(phase_id: &str, track_id: &str, step_id: &str, sender: Option<&EventSender>) -> Result<()> {
+fn summarize_step(phase_id: &str, track_id: &str, step_id: &str, sender: Option<&EventSender>) -> Result<String> {
     let step_plan = state::read_step_plan(phase_id, track_id, step_id)?;
     let summary_path = state::step_summary_path(phase_id, track_id, step_id);
 
@@ -183,6 +203,17 @@ fn summarize_step(phase_id: &str, track_id: &str, step_id: &str, sender: Option<
         .max_turns(20)
         .system_prompt(&sys_prompt);
 
-    claude::run(opts, sender)?;
-    Ok(())
+    claude::run(opts, sender)
+}
+
+fn append_to_log(log_path: &std::path::Path, header: &str, content: &str) {
+    let mut file = match OpenOptions::new().append(true).open(log_path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let _ = writeln!(file, "\n{}", header);
+    let _ = file.write_all(content.as_bytes());
+    if !content.ends_with('\n') {
+        let _ = writeln!(file);
+    }
 }

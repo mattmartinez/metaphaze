@@ -199,6 +199,12 @@ pub fn step_summary_path(phase_id: &str, track_id: &str, step_id: &str) -> PathB
         .join(format!("{}-SUMMARY.md", step_id))
 }
 
+pub fn step_output_log_path(phase_id: &str, track_id: &str, step_id: &str) -> PathBuf {
+    track_dir(phase_id, track_id)
+        .join("steps")
+        .join(format!("{}-OUTPUT.log", step_id))
+}
+
 pub fn context_path(phase_id: &str) -> PathBuf {
     phase_dir(phase_id).join("CONTEXT.md")
 }
