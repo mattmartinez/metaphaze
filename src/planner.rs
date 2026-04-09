@@ -40,6 +40,9 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&
     // Parse the plan output and create step files + update state
     parse_and_create_steps(project_state, phase_id, &result)?;
 
+    // Advance current_phase if this phase is ahead of where we are
+    state::advance_phase(phase_id)?;
+
     println!("Plan written to {}/", ph_dir.display());
     println!("\nReview the plan, then run `mz auto` to start execution.");
     Ok(())

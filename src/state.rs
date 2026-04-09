@@ -414,6 +414,15 @@ pub fn mark_step_in_progress(phase_id: &str, track_id: &str, step_id: &str) -> R
     save(&state)
 }
 
+pub fn advance_phase(phase_id: &str) -> Result<()> {
+    let mut state = load()?;
+    if phase_id > state.current_phase.as_str() {
+        state.current_phase = phase_id.to_string();
+        save(&state)?;
+    }
+    Ok(())
+}
+
 pub fn reset_step(phase_id: &str, step_id: &str) -> Result<()> {
     let mut state = load()?;
 
@@ -957,6 +966,35 @@ mod tests {
         let step = &s.phases[0].tracks[0].steps[1];
         assert_eq!(step.status, StepStatus::Pending);
         assert_eq!(step.blocked_reason, None);
+    }
+
+    #[test]
+    fn test_advance_phase() {
+        let _tmp = TempMz::new();
+
+        let mut state = make_state();
+        state.current_phase = "P001".to_string();
+        save(&state).unwrap();
+
+        // Forward advance: P001 -> P002
+        advance_phase("P002").unwrap();
+        let s = load().unwrap();
+        assert_eq!(s.current_phase, "P002");
+
+        // Backward: P001 < P002, no change
+        advance_phase("P001").unwrap();
+        let s = load().unwrap();
+        assert_eq!(s.current_phase, "P002");
+
+        // Lateral: same phase, no change
+        advance_phase("P002").unwrap();
+        let s = load().unwrap();
+        assert_eq!(s.current_phase, "P002");
+
+        // Forward advance: P002 -> P003
+        advance_phase("P003").unwrap();
+        let s = load().unwrap();
+        assert_eq!(s.current_phase, "P003");
     }
 }
 
