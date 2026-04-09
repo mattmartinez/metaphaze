@@ -3,7 +3,7 @@ use colored::Colorize;
 use std::process::Command;
 
 use crate::events::EventSender;
-use crate::stream::{self, ContentBlock, StreamEvent};
+use crate::stream::{self, ContentBlock, DeltaContent, StreamEvent};
 
 pub struct ClaudeOptions {
     pub prompt: String,
@@ -120,21 +120,30 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                             .collect::<Vec<_>>()
                             .join("");
                         if !text.is_empty() {
-                            if let Some(tx) = sender {
-                                let _ = tx.send(crate::events::ProgressEvent::AssistantText { text: text.clone() });
-                            } else {
+                            if sender.is_none() {
+                                // Non-TUI: print complete message (no token streaming yet — that's TR03)
                                 eprintln!("  {}", text.dimmed());
                             }
+                            // TUI path: skip — content already streamed token-by-token via TokenDelta
                         }
                     }
-                    Some(StreamEvent::ContentBlockDelta { .. }) => {
-                        // Token-level delta — handled in future step (ST02)
+                    Some(StreamEvent::ContentBlockDelta { ref delta }) => {
+                        if let DeltaContent::TextDelta { text } = delta {
+                            if let Some(tx) = sender {
+                                let _ = tx.send(crate::events::ProgressEvent::TokenDelta {
+                                    text: text.clone(),
+                                });
+                            }
+                        }
+                        // Non-text deltas (input_json_delta) are ignored
+                        // Non-TUI stderr streaming is TR03
                     }
-                    Some(StreamEvent::ToolUse { tool, .. }) => {
+                    Some(ref parsed @ StreamEvent::ToolUse { ref tool, .. }) => {
+                        let summary = parsed.tool_use_summary().unwrap_or_else(|| tool.clone());
                         if let Some(tx) = sender {
-                            let _ = tx.send(crate::events::ProgressEvent::ToolUseStarted { tool: tool.clone() });
+                            let _ = tx.send(crate::events::ProgressEvent::ToolUseStarted { tool: summary.clone() });
                         } else {
-                            eprintln!("  {} {}", "🔧".cyan(), tool.cyan());
+                            eprintln!("  {} {}", "🔧".cyan(), summary.cyan());
                         }
                     }
                     Some(StreamEvent::ToolResult { tool, .. }) => {

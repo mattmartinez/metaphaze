@@ -12,6 +12,7 @@ pub enum ProgressEvent {
     ToolUseStarted { tool: String },
     ToolResultReceived { tool: String },
     PhaseLabel { label: String },
+    TokenDelta { text: String },
     ExecutionFinished { completed: usize, blocked: usize },
 }
 

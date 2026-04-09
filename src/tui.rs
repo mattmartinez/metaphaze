@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::{self, IsTerminal, Stdout};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -69,7 +70,7 @@ pub struct StepInfo {
     pub started_at: Instant,
 }
 
-const MAX_OUTPUT_LINES: usize = 1000;
+const MAX_OUTPUT_LINES: usize = 5000;
 
 #[derive(Debug, Clone)]
 pub enum OutputLine {
@@ -83,11 +84,13 @@ pub enum OutputLine {
 pub struct DashboardState {
     pub tracks: Vec<TrackInfo>,
     pub current_step: Option<StepInfo>,
-    pub output_lines: Vec<OutputLine>,
+    pub output_lines: VecDeque<OutputLine>,
     pub finished: Option<(usize, usize)>,
     pub scroll_offset: u16,
     pub user_scrolled: bool,
     pub track_scroll_offset: u16,
+    pub partial_line: String,
+    pub has_partial: bool,
 }
 
 impl DashboardState {
@@ -135,11 +138,25 @@ impl DashboardState {
         DashboardState {
             tracks,
             current_step: None,
-            output_lines: Vec::new(),
+            output_lines: VecDeque::new(),
             finished: None,
             scroll_offset: 0,
             user_scrolled: false,
             track_scroll_offset: 0,
+            partial_line: String::new(),
+            has_partial: false,
+        }
+    }
+
+    fn flush_partial(&mut self) {
+        if self.has_partial {
+            self.output_lines.pop_back();
+            self.has_partial = false;
+        }
+        if !self.partial_line.is_empty() {
+            self.output_lines.push_back(OutputLine::Assistant(
+                std::mem::take(&mut self.partial_line),
+            ));
         }
     }
 
@@ -186,37 +203,44 @@ impl DashboardState {
             }
 
             ProgressEvent::ClaudeOutput { line } => {
-                self.output_lines.push(OutputLine::Plain(line));
-                if self.output_lines.len() > MAX_OUTPUT_LINES {
-                    self.output_lines.remove(0);
-                }
+                self.flush_partial();
+                self.output_lines.push_back(OutputLine::Plain(line));
             }
 
             ProgressEvent::AssistantText { text } => {
-                self.output_lines.push(OutputLine::Assistant(text));
-                if self.output_lines.len() > MAX_OUTPUT_LINES {
-                    self.output_lines.remove(0);
-                }
+                self.flush_partial();
+                self.output_lines.push_back(OutputLine::Assistant(text));
             }
 
             ProgressEvent::ToolUseStarted { tool } => {
-                self.output_lines.push(OutputLine::ToolUse(tool));
-                if self.output_lines.len() > MAX_OUTPUT_LINES {
-                    self.output_lines.remove(0);
-                }
+                self.flush_partial();
+                self.output_lines.push_back(OutputLine::ToolUse(tool));
             }
 
             ProgressEvent::ToolResultReceived { tool } => {
-                self.output_lines.push(OutputLine::ToolResult(tool));
-                if self.output_lines.len() > MAX_OUTPUT_LINES {
-                    self.output_lines.remove(0);
-                }
+                self.flush_partial();
+                self.output_lines.push_back(OutputLine::ToolResult(tool));
             }
 
             ProgressEvent::PhaseLabel { label } => {
-                self.output_lines.push(OutputLine::Label(label));
-                if self.output_lines.len() > MAX_OUTPUT_LINES {
-                    self.output_lines.remove(0);
+                self.flush_partial();
+                self.output_lines.push_back(OutputLine::Label(label));
+            }
+
+            ProgressEvent::TokenDelta { text } => {
+                if self.has_partial {
+                    self.output_lines.pop_back();
+                    self.has_partial = false;
+                }
+                self.partial_line.push_str(&text);
+                while let Some(pos) = self.partial_line.find('\n') {
+                    let completed: String = self.partial_line.drain(..=pos).collect();
+                    let trimmed = completed.trim_end_matches('\n').to_string();
+                    self.output_lines.push_back(OutputLine::Assistant(trimmed));
+                }
+                if !self.partial_line.is_empty() {
+                    self.output_lines.push_back(OutputLine::Assistant(self.partial_line.clone()));
+                    self.has_partial = true;
                 }
             }
 
@@ -224,6 +248,10 @@ impl DashboardState {
                 self.finished = Some((completed, blocked));
                 self.current_step = None;
             }
+        }
+
+        while self.output_lines.len() > MAX_OUTPUT_LINES {
+            self.output_lines.pop_front();
         }
     }
 }
