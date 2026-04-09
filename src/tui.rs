@@ -157,6 +157,36 @@ impl DashboardState {
         }
     }
 
+    fn reload_tracks(&mut self) {
+        if let Ok(state) = crate::state::load() {
+            let phase = state.phases.iter().find(|p| p.id == self.phase_id);
+            if let Some(phase) = phase {
+                self.tracks = phase.tracks.iter().map(|t| {
+                    let steps_done = t.steps.iter().filter(|s| s.status == StepStatus::Complete).count();
+                    let steps_total = t.steps.len();
+                    let has_blocked = t.steps.iter().any(|s| s.status == StepStatus::Blocked);
+                    let has_in_progress = t.steps.iter().any(|s| s.status == StepStatus::InProgress);
+                    let status = if steps_done == steps_total && steps_total > 0 {
+                        TrackStatus::Done
+                    } else if has_blocked {
+                        TrackStatus::Blocked
+                    } else if has_in_progress || steps_done > 0 {
+                        TrackStatus::Active
+                    } else {
+                        TrackStatus::Pending
+                    };
+                    TrackInfo {
+                        id: t.id.clone(),
+                        title: t.title.clone(),
+                        status,
+                        steps_done,
+                        steps_total,
+                    }
+                }).collect();
+            }
+        }
+    }
+
     fn flush_partial(&mut self) {
         if self.has_partial {
             self.output_lines.pop_back();
@@ -189,26 +219,11 @@ impl DashboardState {
                 });
             }
 
-            ProgressEvent::StepCompleted { track_id, .. } => {
-                if let Some(t) = self.tracks.iter_mut().find(|t| t.id == track_id) {
-                    t.steps_done = t.steps_done.saturating_add(1);
-                }
+            ProgressEvent::StepCompleted { .. }
+            | ProgressEvent::StepFailed { .. }
+            | ProgressEvent::TrackCompleted { .. } => {
+                self.reload_tracks();
                 self.current_step = None;
-            }
-
-            ProgressEvent::StepFailed { track_id, .. } => {
-                if let Some(t) = self.tracks.iter_mut().find(|t| t.id == track_id) {
-                    if t.steps_done == t.steps_total.saturating_sub(1) {
-                        t.status = TrackStatus::Blocked;
-                    }
-                }
-            }
-
-            ProgressEvent::TrackCompleted { track_id, .. } => {
-                if let Some(t) = self.tracks.iter_mut().find(|t| t.id == track_id) {
-                    t.status = TrackStatus::Done;
-                    t.steps_done = t.steps_total;
-                }
             }
 
             ProgressEvent::ClaudeOutput { line } => {

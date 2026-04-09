@@ -156,44 +156,8 @@ pub fn parse_stream_line(line: &str) -> Option<StreamEvent> {
         return None;
     }
     match serde_json::from_str::<StreamEvent>(trimmed) {
-        Ok(event) => {
-            let variant = match &event {
-                StreamEvent::Assistant { .. } => "assistant",
-                StreamEvent::ContentBlockDelta { .. } => "content_block_delta",
-                StreamEvent::ToolUse { .. } => "tool_use",
-                StreamEvent::ToolResult { .. } => "tool_result",
-                StreamEvent::Result { .. } => "result",
-                StreamEvent::Error { .. } => "error",
-                StreamEvent::User { .. } => "user",
-                StreamEvent::System { .. } => "system",
-                StreamEvent::MessageStart { .. } => "message_start",
-            };
-            let _ = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/mz-stream-debug.log")
-                .and_then(|mut f| {
-                    use std::io::Write;
-                    writeln!(f, "PARSED: {}", variant)
-                });
-            Some(event)
-        }
-        Err(_) => {
-            // Log unknown events to a debug file for diagnosis
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(t) = v.get("type").and_then(|t| t.as_str()) {
-                    let _ = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/tmp/mz-stream-debug.log")
-                        .and_then(|mut f| {
-                            use std::io::Write;
-                            writeln!(f, "UNKNOWN: type={} line={}", t, &trimmed[..trimmed.len().min(200)])
-                        });
-                }
-            }
-            None
-        }
+        Ok(event) => Some(event),
+        Err(_) => None,
     }
 }
 
