@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
+use std::io::Write;
 use std::process::Command;
 
 use crate::events::EventSender;
@@ -121,8 +122,8 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                             .join("");
                         if !text.is_empty() {
                             if sender.is_none() {
-                                // Non-TUI: print complete message (no token streaming yet — that's TR03)
-                                eprintln!("  {}", text.dimmed());
+                                // Non-TUI: user already saw text token-by-token; just terminate the line
+                                eprintln!();
                             }
                             // TUI path: skip — content already streamed token-by-token via TokenDelta
                         }
@@ -133,10 +134,13 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                                 let _ = tx.send(crate::events::ProgressEvent::TokenDelta {
                                     text: text.clone(),
                                 });
+                            } else {
+                                // Non-TUI: stream to stderr in real-time
+                                eprint!("{}", text.dimmed());
+                                let _ = std::io::stderr().flush();
                             }
                         }
                         // Non-text deltas (input_json_delta) are ignored
-                        // Non-TUI stderr streaming is TR03
                     }
                     Some(ref parsed @ StreamEvent::ToolUse { ref tool, .. }) => {
                         let summary = parsed.tool_use_summary().unwrap_or_else(|| tool.clone());
