@@ -95,6 +95,8 @@ pub struct DashboardState {
     pub track_scroll_offset: u16,
     pub partial_line: String,
     pub has_partial: bool,
+    pub model: Option<String>,
+    pub start_time: std::time::Instant,
 }
 
 impl DashboardState {
@@ -150,6 +152,8 @@ impl DashboardState {
             track_scroll_offset: 0,
             partial_line: String::new(),
             has_partial: false,
+            model: None,
+            start_time: std::time::Instant::now(),
         }
     }
 
@@ -254,8 +258,8 @@ impl DashboardState {
                 self.current_step = None;
             }
 
-            ProgressEvent::ModelDetected { .. } => {
-                // Handled in a later step (status bar); ignored for now.
+            ProgressEvent::ModelDetected { model } => {
+                self.model = Some(model);
             }
         }
 
@@ -470,12 +474,11 @@ impl App {
             let term_size = self.terminal.size()?;
             let track_height = (self.dashboard.tracks.len() as u16 + 2).max(4).min(8);
             let middle_height = 4u16;
-            let footer_height = if self.dashboard.finished.is_some() { 1u16 } else { 0u16 };
             let layout_chunks = Layout::vertical([
                 Constraint::Length(track_height),
                 Constraint::Length(middle_height),
                 Constraint::Min(5),
-                Constraint::Length(footer_height),
+                Constraint::Length(1),
             ])
             .split(ratatui::layout::Rect::new(0, 0, term_size.width, term_size.height));
             let output_inner_width = layout_chunks[2].width.saturating_sub(2);
@@ -516,6 +519,18 @@ impl App {
         let finished = dashboard.finished;
         let focused = &self.focused_panel;
         let is_paused = self.paused.load(Ordering::Relaxed);
+        let model_name = dashboard.model.as_deref().map(|m| {
+            // Strip date suffix: "claude-sonnet-4-20250514" → "claude-sonnet-4"
+            // Date suffixes are 8-digit numbers at the end after a dash
+            let parts: Vec<&str> = m.split('-').collect();
+            let strip_count = parts.iter().rev().take_while(|p| p.chars().all(|c| c.is_ascii_digit()) && p.len() == 8).count();
+            if strip_count > 0 {
+                parts[..parts.len() - strip_count].join("-")
+            } else {
+                m.to_string()
+            }
+        });
+        let elapsed = dashboard.start_time.elapsed();
 
         self.terminal.draw(|frame| {
             let area = frame.area();
@@ -532,14 +547,13 @@ impl App {
                 return;
             }
 
-            // Four vertical chunks: top=track overview, middle=step progress, bottom=output, footer=status
+            // Four vertical chunks: top=track overview, middle=step progress, bottom=output, footer=status bar
             let track_height = (tracks.len() as u16 + 2).max(4).min(8); // borders + content, capped at 8
-            let footer_height = if finished.is_some() { 1u16 } else { 0u16 };
             let chunks = Layout::vertical([
                 Constraint::Length(track_height),
                 Constraint::Length(4),
                 Constraint::Min(5),
-                Constraint::Length(footer_height),
+                Constraint::Length(1),
             ])
             .split(area);
 
@@ -595,27 +609,8 @@ impl App {
                 })
                 .collect();
 
-            let footer_line = match finished {
-                Some((_, blocked)) if blocked > 0 => {
-                    Some(Line::from(Span::styled(
-                        format!(" {} step(s) blocked — press q to exit", blocked),
-                        Style::default().fg(Color::Red),
-                    )))
-                }
-                Some(_) => Some(Line::from(Span::styled(
-                    " Phase complete — press q to exit",
-                    Style::default().fg(Color::Green),
-                ))),
-                None => None,
-            };
-
-            let mut all_lines = track_lines;
-            if let Some(fl) = footer_line {
-                all_lines.push(Line::from(""));
-                all_lines.push(fl);
-            }
-
             let phase_title = format!(" Tracks — {} ", dashboard.phase_id);
+            let all_lines = track_lines;
             let overview = Paragraph::new(all_lines)
                 .block(
                     Block::default()
@@ -761,24 +756,62 @@ impl App {
                 frame.render_widget(output_para, chunks[2]);
             }
 
-            // ── Footer: end-of-run status ─────────────────────────────────────
-            if let Some((_, blocked)) = finished {
-                let (msg, color) = if blocked > 0 {
-                    (
-                        format!(" {} step(s) blocked — press q to exit, r to retry", blocked),
-                        Color::Yellow,
-                    )
-                } else {
-                    (
-                        " Phase complete — press q to exit".to_string(),
-                        Color::Green,
-                    )
+            // ── Status bar (always visible) ───────────────────────────────────
+            {
+                let bar_width = chunks[3].width as usize;
+
+                // Left: elapsed time or completion state
+                let (left_text, left_color) = match finished {
+                    Some((_, blocked)) if blocked > 0 => {
+                        (format!(" ⚠ {} step(s) blocked", blocked), Color::Yellow)
+                    }
+                    Some(_) => (" ✓ Phase complete".to_string(), Color::Green),
+                    None => {
+                        let secs = elapsed.as_secs();
+                        (format!(" {:02}:{:02}", secs / 60, secs % 60), Color::White)
+                    }
                 };
-                let footer = Paragraph::new(Line::from(Span::styled(
-                    msg,
-                    Style::default().fg(color),
-                )));
-                frame.render_widget(footer, chunks[3]);
+
+                // Center: model name (or empty)
+                let center_text = model_name.as_deref().unwrap_or("").to_string();
+
+                // Right: keybindings
+                let right_text = if is_paused {
+                    "r:resume  q:stop "
+                } else {
+                    match finished {
+                        Some((_, blocked)) if blocked > 0 => "q:quit  r:retry ",
+                        Some(_) => "q:quit ",
+                        None => "q:stop  p:pause  Tab:focus  j/k:scroll ",
+                    }
+                };
+
+                // Build spans with padding to fill the bar
+                let left_len = left_text.chars().count();
+                let center_len = center_text.chars().count();
+                let right_len = right_text.chars().count();
+
+                // Padding: center the model name, right-align the keybindings
+                let left_pad = if center_len > 0 {
+                    bar_width.saturating_sub(left_len + center_len + right_len) / 2
+                } else {
+                    bar_width.saturating_sub(left_len + right_len)
+                };
+                let right_pad = bar_width.saturating_sub(left_len + left_pad + center_len + right_len);
+
+                let bar_style = Style::default().bg(Color::DarkGray).fg(Color::White);
+                let mut spans = vec![
+                    Span::styled(left_text, Style::default().bg(Color::DarkGray).fg(left_color)),
+                    Span::styled(" ".repeat(left_pad), bar_style),
+                ];
+                if !center_text.is_empty() {
+                    spans.push(Span::styled(center_text, Style::default().bg(Color::DarkGray).fg(Color::Cyan)));
+                }
+                spans.push(Span::styled(" ".repeat(right_pad), bar_style));
+                spans.push(Span::styled(right_text, Style::default().bg(Color::DarkGray).fg(Color::White)));
+
+                let status_bar = Paragraph::new(Line::from(spans)).style(bar_style);
+                frame.render_widget(status_bar, chunks[3]);
             }
         })?;
         Ok(())
