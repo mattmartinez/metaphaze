@@ -458,11 +458,12 @@ impl App {
             let output_inner_height = layout_chunks[2].height.saturating_sub(2);
 
             let visual_line_count: u16 = self.dashboard.output_lines.iter().map(|line| {
-                let display_len = match line {
-                    OutputLine::Plain(s) | OutputLine::Assistant(s) | OutputLine::Label(s) => s.width(),
-                    OutputLine::ToolUse(s) => 3 + s.width(),
-                    OutputLine::ToolResult(s) => 4 + s.width(),
+                let text = match line {
+                    OutputLine::Plain(s) | OutputLine::Assistant(s) | OutputLine::Label(s) => s.clone(),
+                    OutputLine::ToolUse(s) => format!("🔧 {}", s),
+                    OutputLine::ToolResult(s) => format!("  ✓ {}", s),
                 };
+                let display_len = text.width();
                 let w = output_inner_width as usize;
                 if w == 0 || display_len == 0 { 1u16 }
                 else { ((display_len + w - 1) / w) as u16 }
@@ -645,30 +646,42 @@ impl App {
                                 .position(|t| t.id == step.track_id)
                                 .map(|i| i + 1)
                                 .unwrap_or(tracks_done + 1);
-                            format!(
-                                " Step {}/{} · Track {}/{}",
-                                step.step_num, step.total_steps, track_num, tracks_total
-                            )
+                            let elapsed = step.started_at.elapsed().as_secs();
+                            Line::from(vec![
+                                Span::styled(" Step ", Style::default().fg(Color::DarkGray)),
+                                Span::styled(
+                                    format!("{}/{}", step.step_num, step.total_steps),
+                                    Style::default().fg(Color::White),
+                                ),
+                                Span::styled("  Track ", Style::default().fg(Color::DarkGray)),
+                                Span::styled(
+                                    format!("{}/{}", track_num, tracks_total),
+                                    Style::default().fg(Color::White),
+                                ),
+                                Span::styled(
+                                    format!("  [{}m {:02}s]", elapsed / 60, elapsed % 60),
+                                    Style::default().fg(Color::DarkGray),
+                                ),
+                            ])
                         }
-                        None => " Idle".to_string(),
+                        None => Line::from(Span::styled(
+                            " Idle",
+                            Style::default().fg(Color::DarkGray),
+                        )),
                     };
                     frame.render_widget(Paragraph::new(step_line), inner_chunks[0]);
 
-                    // Line 2: gauge with elapsed time label
+                    // Line 2: progress gauge
                     let ratio = if all_steps_total > 0 {
                         (all_steps_done as f64 / all_steps_total as f64).clamp(0.0, 1.0)
                     } else {
                         0.0
                     };
-                    let elapsed_str = match current_step {
-                        Some(step) => {
-                            let secs = step.started_at.elapsed().as_secs();
-                            format!(" [{}m {:02}s]", secs / 60, secs % 60)
-                        }
-                        None => String::new(),
-                    };
-                    let gauge_label = format!("{}/{}{}", all_steps_done, all_steps_total, elapsed_str);
-                    let gauge = Gauge::default().ratio(ratio).label(gauge_label);
+                    let gauge_label = format!("{}/{}", all_steps_done, all_steps_total);
+                    let gauge = Gauge::default()
+                        .ratio(ratio)
+                        .label(gauge_label)
+                        .gauge_style(Style::default().fg(Color::Green));
                     frame.render_widget(gauge, inner_chunks[1]);
                 }
             }
@@ -718,7 +731,7 @@ impl App {
                     .collect();
                 let output_para = Paragraph::new(output_lines)
                     .block(output_block)
-                    .wrap(Wrap { trim: true })
+                    .wrap(Wrap { trim: false })
                     .scroll((dashboard.scroll_offset, 0));
                 frame.render_widget(output_para, chunks[2]);
             }

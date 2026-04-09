@@ -256,7 +256,7 @@ fn cmd_next_inner(
                     (1, 0)
                 }
                 Err(e) => {
-                    eprintln!("Step failed: {}", e);
+                    emit_output(&sender, &format!("Step failed: {}", e));
                     if let Some(tx) = &sender {
                         let _ = tx.send(events::ProgressEvent::StepFailed {
                             track_id: track_id.clone(),
@@ -300,6 +300,14 @@ fn cmd_auto(max_steps: Option<usize>, no_tui: bool) -> Result<()> {
     }
 }
 
+fn emit_output(sender: &Option<events::EventSender>, msg: &str) {
+    if let Some(tx) = sender {
+        let _ = tx.send(events::ProgressEvent::ClaudeOutput { line: msg.to_string() });
+    } else {
+        println!("{}", msg);
+    }
+}
+
 fn cmd_auto_inner(
     max_steps: Option<usize>,
     sender: Option<events::EventSender>,
@@ -315,11 +323,11 @@ fn cmd_auto_inner(
     let mut retries: HashMap<String, u32> = HashMap::new();
     let mut phase_started = false;
 
-    println!("Starting autonomous execution...\n");
+    emit_output(&sender, "Starting autonomous execution...");
 
     loop {
         if stop.load(Ordering::Relaxed) {
-            println!("\nExecution stopped by user.");
+            emit_output(&sender, "Execution stopped by user.");
             break;
         }
 
@@ -328,12 +336,12 @@ fn cmd_auto_inner(
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         if stop.load(Ordering::Relaxed) {
-            println!("\nExecution stopped by user.");
+            emit_output(&sender, "Execution stopped by user.");
             break;
         }
 
         if completed >= limit {
-            println!("\nReached step limit ({}). Stopping.", limit);
+            emit_output(&sender, &format!("Reached step limit ({}). Stopping.", limit));
             break;
         }
 
@@ -348,7 +356,7 @@ fn cmd_auto_inner(
 
         match project_state.next_pending_step() {
             Some((phase_id, track_id, step_id)) => {
-                println!("━━━ {}/{}/{} ━━━", phase_id, track_id, step_id);
+                emit_output(&sender, &format!("━━━ {}/{}/{} ━━━", phase_id, track_id, step_id));
 
                 if let Some(tx) = &sender {
                     let step_title = project_state
@@ -384,7 +392,7 @@ fn cmd_auto_inner(
                     .or_insert_with(|| project_state.step_attempts(&phase_id, &track_id, &step_id));
 
                 if let Err(e) = executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
-                    eprintln!("Step failed: {}", e);
+                    emit_output(&sender, &format!("Step failed: {}", e));
                     *count += 1;
                     state::increment_step_attempts(&phase_id, &track_id, &step_id)?;
 
@@ -395,7 +403,7 @@ fn cmd_auto_inner(
                     }
 
                     if *count >= 3 {
-                        eprintln!("Step {} failed after 3 attempts. Marking blocked.", step_id);
+                        emit_output(&sender, &format!("Step {} failed after 3 attempts. Marking blocked.", step_id));
                         state::mark_step_blocked(
                             &phase_id,
                             &track_id,
@@ -404,7 +412,7 @@ fn cmd_auto_inner(
                         )?;
                         blocked += 1;
                     } else {
-                        eprintln!("Retrying {} (attempt {}/3)", step_id, count);
+                        emit_output(&sender, &format!("Retrying {} (attempt {}/3)", step_id, count));
                         // Step remains InProgress; loop will pick it up again
                     }
                     continue;
@@ -412,7 +420,7 @@ fn cmd_auto_inner(
 
                 if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
                 if let Err(e) = verifier::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
-                    eprintln!("Verification failed: {}", e);
+                    emit_output(&sender, &format!("Verification failed: {}", e));
                 }
 
                 state::mark_step_complete(&phase_id, &track_id, &step_id)?;
@@ -426,13 +434,13 @@ fn cmd_auto_inner(
 
                 let updated = state::load()?;
                 if updated.is_track_complete(&phase_id, &track_id) {
-                    println!("\nTrack {} complete. Running track verification...", track_id);
+                    emit_output(&sender, &format!("Track {} complete. Running track verification...", track_id));
                     if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify track ──".into() }); }
                     if let Err(e) = verifier::run_track(&updated, &phase_id, &track_id, sender.as_ref()) {
-                        eprintln!("Track verification issue: {}", e);
+                        emit_output(&sender, &format!("Track verification issue: {}", e));
                     }
                     if let Err(e) = git::merge_track(&phase_id, &track_id) {
-                        eprintln!("Git merge issue: {}", e);
+                        emit_output(&sender, &format!("Git merge issue: {}", e));
                     }
                     if let Some(tx) = &sender {
                         let _ = tx.send(events::ProgressEvent::TrackCompleted {
@@ -442,7 +450,7 @@ fn cmd_auto_inner(
                 }
             }
             None => {
-                println!("\nNo pending steps. Phase complete or all remaining steps blocked.");
+                emit_output(&sender, "No pending steps. Phase complete or all remaining steps blocked.");
                 break;
             }
         }
@@ -452,7 +460,7 @@ fn cmd_auto_inner(
         let _ = tx.send(events::ProgressEvent::ExecutionFinished { completed, blocked });
     }
 
-    println!("\nCompleted {} steps.", completed);
+    emit_output(&sender, &format!("Completed {} steps.", completed));
     Ok(())
 }
 
