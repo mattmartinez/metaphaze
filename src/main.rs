@@ -468,5 +468,5 @@ fn cmd_steer(message: String) -> Result<()> {
 
     let phase_id = project_state.current_phase().to_string();
     println!("Re-planning remaining steps in {}...", phase_id);
-    planner::replan(&project_state, &phase_id, &message)
+    planner::replan(&project_state, &phase_id, &message, None)
 }

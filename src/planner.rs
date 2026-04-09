@@ -48,7 +48,7 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&
     Ok(())
 }
 
-pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &str) -> Result<()> {
+pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &str, sender: Option<&events::EventSender>) -> Result<()> {
     let project_md = state::read_project_md()?;
     let decisions = state::read_decisions()?;
     let context = state::read_context(phase_id)?;
@@ -124,7 +124,7 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
         .system_prompt(&sys_prompt);
 
     println!("Re-planning remaining steps...\n");
-    let result = claude::run(opts, None)?;
+    let result = claude::run(opts, sender)?;
 
     // Update ROADMAP.md with the re-plan
     let roadmap_content = format!(
