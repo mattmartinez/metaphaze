@@ -1,0 +1,30 @@
+use std::collections::HashMap;
+
+// Prompt templates compiled into the binary
+#[allow(dead_code)]
+pub mod templates {
+    pub const DISCUSS: &str = include_str!("../prompts/discuss.md");
+    pub const PLAN_MILESTONE: &str = include_str!("../prompts/plan_milestone.md");
+    pub const PLAN_SLICE: &str = include_str!("../prompts/plan_slice.md");
+    pub const EXECUTE_TASK: &str = include_str!("../prompts/execute_task.md");
+    pub const VERIFY_TASK: &str = include_str!("../prompts/verify_task.md");
+    pub const VERIFY_SLICE: &str = include_str!("../prompts/verify_slice.md");
+    pub const SUMMARIZE: &str = include_str!("../prompts/summarize.md");
+}
+
+pub fn render(template: &str, vars: &HashMap<&str, String>) -> String {
+    let mut result = template.to_string();
+    for (key, value) in vars {
+        let placeholder = format!("{{{{{}}}}}", key);
+        result = result.replace(&placeholder, value);
+    }
+    result
+}
+
+pub fn vars<'a>() -> HashMap<&'a str, String> {
+    HashMap::new()
+}
+
+pub fn set<'a>(map: &mut HashMap<&'a str, String>, key: &'a str, value: impl Into<String>) {
+    map.insert(key, value.into());
+}
