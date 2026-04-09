@@ -1,6 +1,7 @@
 mod claude;
 mod discuss;
 mod events;
+mod stream;
 mod tui;
 mod executor;
 mod git;

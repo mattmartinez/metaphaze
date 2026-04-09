@@ -3,6 +3,7 @@ use colored::Colorize;
 use std::process::Command;
 
 use crate::events::EventSender;
+use crate::stream::{self, ContentBlock, StreamEvent};
 
 pub struct ClaudeOptions {
     pub prompt: String,
@@ -46,7 +47,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
 
     cmd.arg("-p").arg(&opts.prompt);
     cmd.arg("--permission-mode").arg("acceptEdits");
-    cmd.arg("--output-format").arg("text");
+    cmd.arg("--output-format").arg("stream-json");
 
     if let Some(model) = &opts.model {
         cmd.arg("--model").arg(model);
@@ -101,19 +102,69 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
         stderr
     });
 
-    // Stream stdout to terminal and capture it
+    // Parse stream-json NDJSON events from stdout
     let mut stdout = String::new();
+    let mut result_received = false;
+    let mut fallback_lines: Vec<String> = Vec::new();
     let reader = BufReader::new(child_stdout);
     for line in reader.lines() {
         match line {
             Ok(line) => {
-                if let Some(tx) = sender {
-                    let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: line.clone() });
-                } else {
-                    eprintln!("  {}", line.dimmed());
+                match stream::parse_stream_line(&line) {
+                    Some(StreamEvent::Assistant { message }) => {
+                        let text: String = message.content.iter()
+                            .filter_map(|block| {
+                                if let ContentBlock::Text { text } = block { Some(text.as_str()) } else { None }
+                            })
+                            .collect::<Vec<_>>()
+                            .join("");
+                        if !text.is_empty() {
+                            if let Some(tx) = sender {
+                                let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: text.clone() });
+                            } else {
+                                eprintln!("  {}", text.dimmed());
+                            }
+                        }
+                    }
+                    Some(StreamEvent::ToolUse { tool, .. }) => {
+                        let msg = format!("🔧 {}", tool);
+                        if let Some(tx) = sender {
+                            let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: msg.clone() });
+                        } else {
+                            eprintln!("  {}", msg.dimmed());
+                        }
+                    }
+                    Some(StreamEvent::ToolResult { tool, .. }) => {
+                        let msg = format!("  ✓ {}", tool);
+                        if let Some(tx) = sender {
+                            let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: msg });
+                        }
+                        // Skip stderr — too noisy for non-TUI path
+                    }
+                    Some(StreamEvent::Result { result, .. }) => {
+                        stdout = result;
+                        result_received = true;
+                        if let Some(tx) = sender {
+                            let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput {
+                                line: "── done ──".to_string(),
+                            });
+                        }
+                    }
+                    Some(StreamEvent::Error { error }) => {
+                        let msg = format!("⚠ {}", error);
+                        if let Some(tx) = sender {
+                            let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: msg.clone() });
+                        } else {
+                            eprintln!("  {}", msg.dimmed());
+                        }
+                    }
+                    Some(StreamEvent::System { .. }) => {
+                        // Ignore system-level events
+                    }
+                    None => {
+                        fallback_lines.push(line);
+                    }
                 }
-                stdout.push_str(&line);
-                stdout.push('\n');
             }
             Err(e) => eprintln!("{} read error: {}", "  [claude]".dimmed(), e),
         }
@@ -129,6 +180,10 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
             format!("claude exited with {}: {}", status, stderr.trim())
         };
         bail!("{}", combined);
+    }
+
+    if !result_received {
+        bail!("No result event in stream-json output");
     }
 
     eprintln!(
