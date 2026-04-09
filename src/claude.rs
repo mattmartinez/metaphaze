@@ -130,14 +130,15 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                         if let Some(tx) = sender {
                             let _ = tx.send(crate::events::ProgressEvent::ToolUseStarted { tool: tool.clone() });
                         } else {
-                            eprintln!("  {}", format!("🔧 {}", tool).cyan());
+                            eprintln!("  {} {}", "🔧".cyan(), tool.cyan());
                         }
                     }
                     Some(StreamEvent::ToolResult { tool, .. }) => {
                         if let Some(tx) = sender {
-                            let _ = tx.send(crate::events::ProgressEvent::ToolResultReceived { tool });
+                            let _ = tx.send(crate::events::ProgressEvent::ToolResultReceived { tool: tool.clone() });
+                        } else {
+                            eprintln!("  {} {}", "✓".dimmed(), tool.dimmed());
                         }
-                        // Skip stderr — too noisy for non-TUI path
                     }
                     Some(StreamEvent::Result { result, .. }) => {
                         stdout = result;
@@ -153,7 +154,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                         if let Some(tx) = sender {
                             let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: msg.clone() });
                         } else {
-                            eprintln!("  {}", msg.dimmed());
+                            eprintln!("  {} {}", "⚠".red(), error.red());
                         }
                     }
                     Some(StreamEvent::System { .. }) => {

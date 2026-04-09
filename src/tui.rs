@@ -414,6 +414,11 @@ impl App {
                 .saturating_sub(middle_height)
                 .saturating_sub(2);
 
+            // TODO: wrapped line count for precise manual scroll
+            // With line wrapping enabled, long lines occupy multiple visual rows, so
+            // output_lines.len() underestimates the true visual height. Getting the exact
+            // wrapped count requires knowing the panel width at pre-compute time (complex).
+            // Auto-scroll still works correctly; manual scroll may slightly overestimate max.
             let total = self.dashboard.output_lines.len() as u16;
             let max_scroll = total.saturating_sub(output_inner_height);
 
