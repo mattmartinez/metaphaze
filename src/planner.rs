@@ -2,9 +2,9 @@ use anyhow::Result;
 use regex::Regex;
 use std::fs;
 
-use crate::{claude, prompt, state};
+use crate::{claude, events, prompt, state};
 
-pub fn run(project_state: &state::ProjectState, phase_id: &str) -> Result<()> {
+pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&events::EventSender>) -> Result<()> {
     let project_md = state::read_project_md()?;
     let decisions = state::read_decisions()?;
     let context = state::read_context(phase_id)?;
@@ -30,7 +30,7 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str) -> Result<()> {
         .system_prompt(&sys_prompt);
 
     println!("Generating phase plan...\n");
-    let result = claude::run(opts, None)?;
+    let result = claude::run(opts, sender)?;
 
     // Write ROADMAP.md
     let ph_dir = state::phase_dir(phase_id);

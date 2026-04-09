@@ -243,6 +243,15 @@ pub fn init(
 }
 
 pub fn is_interactive() -> bool {
+    if std::env::var("MZ_NO_TUI").is_ok() {
+        return false;
+    }
+    if std::env::var("CI").is_ok() {
+        return false;
+    }
+    if std::env::var("TERM").map(|v| v == "dumb").unwrap_or(false) {
+        return false;
+    }
     io::stdout().is_terminal()
 }
 

@@ -15,6 +15,10 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(name = "mz", version, about = "A spec-driven context engine for Claude Code")]
 struct Cli {
+    /// Force raw terminal output — skip TUI even in interactive terminals
+    #[arg(long, global = true)]
+    no_tui: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -68,13 +72,14 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let no_tui = cli.no_tui;
 
     match cli.command {
         Commands::Init => cmd_init(),
         Commands::Discuss { phase } => cmd_discuss(phase),
-        Commands::Plan { phase } => cmd_plan(phase),
-        Commands::Next => cmd_next(),
-        Commands::Auto { max_steps } => cmd_auto(max_steps),
+        Commands::Plan { phase } => cmd_plan(phase, no_tui),
+        Commands::Next => cmd_next(no_tui),
+        Commands::Auto { max_steps } => cmd_auto(max_steps, no_tui),
         Commands::Status { detail } => cmd_status(detail),
         Commands::Steer { message } => cmd_steer(message),
         Commands::Reset { step_id } => {
@@ -101,20 +106,214 @@ fn cmd_discuss(phase: Option<String>) -> Result<()> {
     discuss::run(&project_state, &phase_id)
 }
 
-fn cmd_plan(phase: Option<String>) -> Result<()> {
+fn cmd_plan(phase: Option<String>, no_tui: bool) -> Result<()> {
     let project_state = state::load()?;
     let phase_id = phase.unwrap_or_else(|| project_state.current_phase().to_string());
-    println!("Planning {}...\n", phase_id);
-    planner::run(&project_state, &phase_id)
+
+    if !no_tui && tui::is_interactive() {
+        let phase_id = std::sync::Arc::new(phase_id);
+        tui::run_with_tui(project_state, move |sender, stop, paused| {
+            cmd_plan_inner((*phase_id).clone(), sender, stop, paused)
+        })
+    } else {
+        println!("Planning {}...\n", phase_id);
+        planner::run(&project_state, &phase_id, None)
+    }
 }
 
-fn cmd_next() -> Result<()> {
+fn cmd_plan_inner(
+    phase_id: String,
+    sender: Option<events::EventSender>,
+    _stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
     let project_state = state::load()?;
-    executor::run_next(&project_state, None)
+
+    if let Some(tx) = &sender {
+        let _ = tx.send(events::ProgressEvent::PhaseStarted {
+            phase_id: phase_id.clone(),
+            total_tracks: 0,
+            total_steps: 0,
+        });
+        let _ = tx.send(events::ProgressEvent::StepStarted {
+            phase_id: phase_id.clone(),
+            track_id: String::new(),
+            step_id: "plan".to_string(),
+            step_title: format!("Planning phase {}...", phase_id),
+            step_num: 1,
+            total_steps: 1,
+        });
+    }
+
+    let result = planner::run(&project_state, &phase_id, sender.as_ref());
+
+    match result {
+        Ok(()) => {
+            if let Some(tx) = &sender {
+                let _ = tx.send(events::ProgressEvent::StepCompleted {
+                    phase_id: phase_id.clone(),
+                    track_id: String::new(),
+                    step_id: "plan".to_string(),
+                });
+                let _ = tx.send(events::ProgressEvent::ExecutionFinished {
+                    completed: 1,
+                    blocked: 0,
+                });
+            }
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(tx) = &sender {
+                let _ = tx.send(events::ProgressEvent::StepFailed {
+                    phase_id: phase_id.clone(),
+                    track_id: String::new(),
+                    step_id: "plan".to_string(),
+                    error: e.to_string(),
+                });
+                let _ = tx.send(events::ProgressEvent::ExecutionFinished {
+                    completed: 0,
+                    blocked: 1,
+                });
+            }
+            Err(e)
+        }
+    }
 }
 
-fn cmd_auto(max_steps: Option<usize>) -> Result<()> {
-    if tui::is_interactive() {
+fn cmd_next(no_tui: bool) -> Result<()> {
+    if !no_tui && tui::is_interactive() {
+        let project_state = state::load()?;
+        tui::run_with_tui(project_state, move |sender, stop, paused| {
+            cmd_next_inner(sender, stop, paused)
+        })
+    } else {
+        let project_state = state::load()?;
+        executor::run_next(&project_state, None)
+    }
+}
+
+fn cmd_next_inner(
+    sender: Option<events::EventSender>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    _paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<()> {
+    use std::sync::atomic::Ordering;
+
+    let project_state = state::load()?;
+
+    if let Some(tx) = &sender {
+        let phase_id = project_state.current_phase().to_string();
+        let current_phase = project_state.phases.iter().find(|p| p.id == phase_id);
+        let total_tracks = current_phase.map(|p| p.tracks.len()).unwrap_or(0);
+        let total_steps = current_phase
+            .map(|p| p.tracks.iter().map(|t| t.steps.len()).sum())
+            .unwrap_or(0);
+        let _ = tx.send(events::ProgressEvent::PhaseStarted {
+            phase_id,
+            total_tracks,
+            total_steps,
+        });
+    }
+
+    match project_state.next_pending_step() {
+        Some((phase_id, track_id, step_id)) => {
+            if stop.load(Ordering::Relaxed) {
+                if let Some(tx) = &sender {
+                    let _ = tx.send(events::ProgressEvent::ExecutionFinished {
+                        completed: 0,
+                        blocked: 0,
+                    });
+                }
+                return Ok(());
+            }
+
+            println!("Executing {}/{}/{}...\n", phase_id, track_id, step_id);
+
+            if let Some(tx) = &sender {
+                let step_title = project_state
+                    .phases
+                    .iter()
+                    .find(|p| p.id == phase_id)
+                    .and_then(|p| p.tracks.iter().find(|t| t.id == track_id))
+                    .and_then(|t| {
+                        t.steps.iter().enumerate().find(|(_, s)| s.id == step_id)
+                    })
+                    .map(|(i, s)| {
+                        let total = project_state
+                            .phases
+                            .iter()
+                            .find(|p| p.id == phase_id)
+                            .and_then(|p| p.tracks.iter().find(|t| t.id == track_id))
+                            .map(|t| t.steps.len())
+                            .unwrap_or(0);
+                        (i + 1, s.title.clone(), total)
+                    });
+                if let Some((step_num, title, total)) = step_title {
+                    let _ = tx.send(events::ProgressEvent::StepStarted {
+                        phase_id: phase_id.clone(),
+                        track_id: track_id.clone(),
+                        step_id: step_id.clone(),
+                        step_title: title,
+                        step_num,
+                        total_steps: total,
+                    });
+                }
+            }
+
+            let run_result =
+                executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref());
+
+            if let Err(e) = verifier::run_step(&project_state, &phase_id, &track_id, &step_id) {
+                eprintln!("Verification failed: {}", e);
+            }
+
+            let (completed, blocked) = match run_result {
+                Ok(()) => {
+                    state::mark_step_complete(&phase_id, &track_id, &step_id)?;
+                    println!("\nStep complete.");
+                    if let Some(tx) = &sender {
+                        let _ = tx.send(events::ProgressEvent::StepCompleted {
+                            phase_id: phase_id.clone(),
+                            track_id: track_id.clone(),
+                            step_id: step_id.clone(),
+                        });
+                    }
+                    (1, 0)
+                }
+                Err(e) => {
+                    eprintln!("Step failed: {}", e);
+                    if let Some(tx) = &sender {
+                        let _ = tx.send(events::ProgressEvent::StepFailed {
+                            phase_id: phase_id.clone(),
+                            track_id: track_id.clone(),
+                            step_id: step_id.clone(),
+                            error: e.to_string(),
+                        });
+                    }
+                    (0, 1)
+                }
+            };
+
+            if let Some(tx) = &sender {
+                let _ = tx.send(events::ProgressEvent::ExecutionFinished { completed, blocked });
+            }
+        }
+        None => {
+            println!("No pending steps.");
+            if let Some(tx) = &sender {
+                let _ = tx.send(events::ProgressEvent::ExecutionFinished {
+                    completed: 0,
+                    blocked: 0,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_auto(max_steps: Option<usize>, no_tui: bool) -> Result<()> {
+    if !no_tui && tui::is_interactive() {
         let project_state = state::load()?;
         tui::run_with_tui(project_state, move |sender, stop, paused| {
             cmd_auto_inner(max_steps, sender, stop, paused)
