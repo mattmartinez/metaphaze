@@ -253,6 +253,10 @@ impl DashboardState {
                 self.finished = Some((completed, blocked));
                 self.current_step = None;
             }
+
+            ProgressEvent::ModelDetected { .. } => {
+                // Handled in a later step (status bar); ignored for now.
+            }
         }
 
         while self.output_lines.len() > MAX_OUTPUT_LINES {

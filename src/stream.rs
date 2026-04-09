@@ -50,9 +50,23 @@ pub enum StreamEvent {
         #[serde(flatten)]
         _extra: Value,
     },
+    /// First event in a stream — carries the model name.
+    MessageStart {
+        message: MessageStartData,
+    },
 }
 
 impl StreamEvent {
+    /// Return the model name from a `MessageStart` event, or `None` for other variants.
+    pub fn model_name(&self) -> Option<&str> {
+        if let StreamEvent::MessageStart { message } = self {
+            Some(message.model.as_str())
+        } else {
+            None
+        }
+    }
+
+
     /// Extract the text from a `ContentBlockDelta` event with a `text_delta`.
     /// Returns `None` for non-text deltas or non-delta events.
     pub fn delta_text(&self) -> Option<&str> {
@@ -73,6 +87,9 @@ impl StreamEvent {
                 "Read" | "Edit" | "Write" | "NotebookEdit" => {
                     input.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())
                 }
+                "Bash" => {
+                    input.get("command").and_then(|v| v.as_str()).map(|s| s.to_string())
+                }
                 "Grep" => {
                     input.get("path").and_then(|v| v.as_str()).map(|s| s.to_string())
                         .or_else(|| input.get("pattern").and_then(|v| v.as_str()).map(|s| s.to_string()))
@@ -83,10 +100,19 @@ impl StreamEvent {
                 }
                 _ => None,
             };
-            return Some(match key_arg {
-                Some(arg) => format!("{} {}", tool, arg),
+            let summary = match key_arg {
+                Some(arg) => {
+                    let s = format!("{} {}", tool, arg);
+                    if s.chars().count() > 80 {
+                        let truncated: String = s.chars().take(79).collect();
+                        format!("{}…", truncated)
+                    } else {
+                        s
+                    }
+                }
                 None => tool.clone(),
-            });
+            };
+            return Some(summary);
         }
         None
     }
@@ -116,6 +142,12 @@ pub enum DeltaContent {
     Unknown,
 }
 
+/// The `message` field inside a `message_start` event.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageStartData {
+    pub model: String,
+}
+
 /// Parse a single NDJSON line from the stream-json output.
 /// Returns `None` for unrecognized or malformed lines.
 pub fn parse_stream_line(line: &str) -> Option<StreamEvent> {
@@ -124,9 +156,42 @@ pub fn parse_stream_line(line: &str) -> Option<StreamEvent> {
         return None;
     }
     match serde_json::from_str::<StreamEvent>(trimmed) {
-        Ok(event) => Some(event),
+        Ok(event) => {
+            let variant = match &event {
+                StreamEvent::Assistant { .. } => "assistant",
+                StreamEvent::ContentBlockDelta { .. } => "content_block_delta",
+                StreamEvent::ToolUse { .. } => "tool_use",
+                StreamEvent::ToolResult { .. } => "tool_result",
+                StreamEvent::Result { .. } => "result",
+                StreamEvent::Error { .. } => "error",
+                StreamEvent::User { .. } => "user",
+                StreamEvent::System { .. } => "system",
+                StreamEvent::MessageStart { .. } => "message_start",
+            };
+            let _ = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/tmp/mz-stream-debug.log")
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "PARSED: {}", variant)
+                });
+            Some(event)
+        }
         Err(_) => {
-            // Silently ignore unknown event types (rate_limit_event, etc.)
+            // Log unknown events to a debug file for diagnosis
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if let Some(t) = v.get("type").and_then(|t| t.as_str()) {
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/mz-stream-debug.log")
+                        .and_then(|mut f| {
+                            use std::io::Write;
+                            writeln!(f, "UNKNOWN: type={} line={}", t, &trimmed[..trimmed.len().min(200)])
+                        });
+                }
+            }
             None
         }
     }
@@ -225,9 +290,46 @@ mod tests {
 
     #[test]
     fn test_tool_use_summary_unknown_tool() {
-        let line = r#"{"type":"tool_use","tool":"Bash","input":{"command":"ls"}}"#;
+        let line = r#"{"type":"tool_use","tool":"UnknownTool","input":{"irrelevant":"data"}}"#;
+        let event = parse_stream_line(line).expect("should parse");
+        assert_eq!(event.tool_use_summary(), Some("UnknownTool".to_string()));
+    }
+
+    #[test]
+    fn test_tool_use_summary_bash_with_command() {
+        let line = r#"{"type":"tool_use","tool":"Bash","input":{"command":"git status && git diff"}}"#;
+        let event = parse_stream_line(line).expect("should parse");
+        assert_eq!(event.tool_use_summary(), Some("Bash git status && git diff".to_string()));
+    }
+
+    #[test]
+    fn test_tool_use_summary_bash_no_command() {
+        let line = r#"{"type":"tool_use","tool":"Bash","input":{}}"#;
         let event = parse_stream_line(line).expect("should parse");
         assert_eq!(event.tool_use_summary(), Some("Bash".to_string()));
+    }
+
+    #[test]
+    fn test_tool_use_summary_truncation() {
+        // command of 77 chars + "Bash " (5) = 82 chars total, which exceeds 80
+        let long_cmd = "a".repeat(77);
+        let input = serde_json::json!({"command": long_cmd});
+        let event = StreamEvent::ToolUse { tool: "Bash".to_string(), input };
+        let summary = event.tool_use_summary().expect("should return summary");
+        // result should be exactly 80 chars (79 chars + "…" which is 1 char but 3 bytes)
+        assert_eq!(summary.chars().count(), 80);
+        assert!(summary.ends_with('…'));
+    }
+
+    #[test]
+    fn test_tool_use_summary_no_truncation_at_80() {
+        // "Bash " (5) + 75 chars = 80 chars total, should NOT be truncated
+        let cmd = "b".repeat(75);
+        let input = serde_json::json!({"command": cmd});
+        let event = StreamEvent::ToolUse { tool: "Bash".to_string(), input };
+        let summary = event.tool_use_summary().expect("should return summary");
+        assert_eq!(summary.chars().count(), 80);
+        assert!(!summary.ends_with('…'));
     }
 
     #[test]
@@ -235,5 +337,27 @@ mod tests {
         let line = r#"{"type":"error","error":"oops"}"#;
         let event = parse_stream_line(line).expect("should parse");
         assert_eq!(event.tool_use_summary(), None);
+    }
+
+    #[test]
+    fn test_message_start_parses_model() {
+        let line = r#"{"type":"message_start","message":{"model":"claude-sonnet-4-20250514","id":"msg_xxx","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}"#;
+        let event = parse_stream_line(line).expect("should parse");
+        assert!(matches!(event, StreamEvent::MessageStart { .. }));
+        assert_eq!(event.model_name(), Some("claude-sonnet-4-20250514"));
+    }
+
+    #[test]
+    fn test_message_start_minimal() {
+        let line = r#"{"type":"message_start","message":{"model":"claude-opus-4-6"}}"#;
+        let event = parse_stream_line(line).expect("should parse");
+        assert_eq!(event.model_name(), Some("claude-opus-4-6"));
+    }
+
+    #[test]
+    fn test_model_name_on_non_message_start() {
+        let line = r#"{"type":"error","error":"oops"}"#;
+        let event = parse_stream_line(line).expect("should parse");
+        assert_eq!(event.model_name(), None);
     }
 }

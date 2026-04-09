@@ -103,6 +103,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
     let mut stdout = String::new();
     let mut result_received = false;
     let mut fallback_lines: Vec<String> = Vec::new();
+    let mut last_tool_summary: Option<String> = None;
     let reader = BufReader::new(child_stdout);
     for line in reader.lines() {
         match line {
@@ -139,6 +140,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                     }
                     Some(ref parsed @ StreamEvent::ToolUse { ref tool, .. }) => {
                         let summary = parsed.tool_use_summary().unwrap_or_else(|| tool.clone());
+                        last_tool_summary = Some(summary.clone());
                         if let Some(tx) = sender {
                             let _ = tx.send(crate::events::ProgressEvent::ToolUseStarted { tool: summary.clone() });
                         } else {
@@ -146,10 +148,11 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                         }
                     }
                     Some(StreamEvent::ToolResult { tool, .. }) => {
+                        let result_tool = last_tool_summary.take().unwrap_or_else(|| tool.clone());
                         if let Some(tx) = sender {
-                            let _ = tx.send(crate::events::ProgressEvent::ToolResultReceived { tool: tool.clone() });
+                            let _ = tx.send(crate::events::ProgressEvent::ToolResultReceived { tool: result_tool.clone() });
                         } else {
-                            eprintln!("  {} {}", "✓".dimmed(), tool.dimmed());
+                            eprintln!("  {} {}", "✓".dimmed(), result_tool.dimmed());
                         }
                     }
                     Some(StreamEvent::Result { result, .. }) => {
@@ -167,6 +170,13 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                             let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: msg.clone() });
                         } else {
                             eprintln!("  {} {}", "⚠".red(), error.red());
+                        }
+                    }
+                    Some(StreamEvent::MessageStart { message }) => {
+                        if let Some(tx) = sender {
+                            let _ = tx.send(crate::events::ProgressEvent::ModelDetected {
+                                model: message.model.clone(),
+                            });
                         }
                     }
                     Some(StreamEvent::User { .. }) | Some(StreamEvent::System { .. }) => {
