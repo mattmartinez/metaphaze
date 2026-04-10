@@ -64,6 +64,7 @@ pub fn generate_roadmap(project_state: &state::ProjectState, sender: Option<&eve
 }
 
 pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&events::EventSender>) -> Result<()> {
+    let phase_id = &state::normalize_phase_id(phase_id);
     let project_md = state::read_project_md()?;
     let decisions = state::read_decisions()?;
     let context = state::read_context(phase_id)?;

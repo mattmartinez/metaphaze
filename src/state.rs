@@ -453,6 +453,10 @@ pub fn mark_step_in_progress(phase_id: &str, track_id: &str, step_id: &str) -> R
     })
 }
 
+pub fn normalize_phase_id(id: &str) -> String {
+    id.to_uppercase()
+}
+
 pub fn advance_phase(phase_id: &str) -> Result<()> {
     mutate_state(|state| {
         if phase_id > state.current_phase.as_str() {
@@ -1153,6 +1157,13 @@ mod tests {
 
         let ids = completed_phase_ids().unwrap();
         assert_eq!(ids, vec!["P001".to_string()]);
+    }
+
+    #[test]
+    fn test_normalize_phase_id() {
+        assert_eq!(normalize_phase_id("p008"), "P008");
+        assert_eq!(normalize_phase_id("P008"), "P008");
+        assert_eq!(normalize_phase_id("p001"), "P001");
     }
 }
 

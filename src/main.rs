@@ -88,7 +88,7 @@ fn main() -> Result<()> {
         Commands::Steer { message } => cmd_steer(message),
         Commands::Reset { step_id, phase } => {
             let project_state = state::load()?;
-            let phase_id = phase.unwrap_or_else(|| project_state.current_phase().to_string());
+            let phase_id = state::normalize_phase_id(&phase.unwrap_or_else(|| project_state.current_phase().to_string()));
             state::reset_step(&phase_id, &step_id)
         }
     }
@@ -106,7 +106,7 @@ fn cmd_init() -> Result<()> {
 
 fn cmd_discuss(phase: Option<String>) -> Result<()> {
     let project_state = state::load()?;
-    let phase_id = phase.unwrap_or_else(|| project_state.current_phase().to_string());
+    let phase_id = state::normalize_phase_id(&phase.unwrap_or_else(|| project_state.current_phase().to_string()));
     println!("Starting discussion for {}...\n", phase_id);
     discuss::run(&project_state, &phase_id)
 }
@@ -125,7 +125,7 @@ fn cmd_plan(phase: Option<String>, no_tui: bool) -> Result<()> {
             planner::generate_roadmap(&project_state, None)
         }
     } else {
-        let phase_id = phase.unwrap();
+        let phase_id = state::normalize_phase_id(&phase.unwrap());
         if !no_tui && tui::is_interactive() {
             let pid = phase_id.clone();
             let phase_id = std::sync::Arc::new(phase_id);
@@ -526,7 +526,7 @@ fn cmd_steer(message: String) -> Result<()> {
     println!("Recording decision...\n");
     state::append_decision(&message)?;
 
-    let phase_id = project_state.current_phase().to_string();
+    let phase_id = state::normalize_phase_id(project_state.current_phase());
     println!("Re-planning remaining steps in {}...", phase_id);
     planner::replan(&project_state, &phase_id, &message, None)
 }
