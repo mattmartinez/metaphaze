@@ -3,6 +3,7 @@ use chrono::Utc;
 use colored::Colorize;
 use dialoguer::Input;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -1248,9 +1249,41 @@ mod tests {
     }
 }
 
+fn format_duration_ms(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        let total_secs = ms / 1000;
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+        format!("{}m {}s", mins, secs)
+    }
+}
+
 pub fn print_status(state: &ProjectState, detail: bool) -> Result<()> {
+    use crate::run_record;
+
     let (total, done, in_progress, blocked) = state.stats();
     let pending = total.saturating_sub(done + in_progress + blocked);
+
+    // Load run records for detail mode; ignore errors (e.g. missing file)
+    let all_records = if detail {
+        run_record::load_all().unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    // Build index: (phase_id, track_id, step_id) -> records
+    let mut record_map: HashMap<(String, String, String), Vec<&crate::run_record::RunRecord>> =
+        HashMap::new();
+    for r in &all_records {
+        record_map
+            .entry((r.phase_id.clone(), r.track_id.clone(), r.step_id.clone()))
+            .or_default()
+            .push(r);
+    }
 
     println!("{}", format!("Project: {}", state.name).bold());
     println!("Current phase: {}\n", state.current_phase);
@@ -1297,7 +1330,41 @@ pub fn print_status(state: &ProjectState, detail: bool) -> Result<()> {
                         Some(r) => format!(" ({})", r).red().to_string(),
                         None => String::new(),
                     };
-                    println!("  {} {} — {}{}", icon, step.id, step.title, suffix);
+                    // Append timing/cost only for completed or in-progress steps with data
+                    let timing_suffix =
+                        if matches!(step.status, StepStatus::Complete | StepStatus::InProgress) {
+                            let key = (ph.id.clone(), track.id.clone(), step.id.clone());
+                            if let Some(recs) = record_map.get(&key) {
+                                let total_ms: u64 = recs.iter().map(|r| r.duration_ms).sum();
+                                let total_cost: Option<f64> = {
+                                    let costs: Vec<f64> =
+                                        recs.iter().filter_map(|r| r.cost_usd).collect();
+                                    if costs.is_empty() {
+                                        None
+                                    } else {
+                                        Some(costs.iter().sum())
+                                    }
+                                };
+                                let attempts = recs
+                                    .iter()
+                                    .filter(|r| r.stage == "execute")
+                                    .count();
+
+                                let time_str = format_duration_ms(total_ms);
+                                let cost_str = match total_cost {
+                                    Some(c) => format!("${:.4}", c),
+                                    None => "-".to_string(),
+                                };
+                                let attempt_word =
+                                    if attempts == 1 { "attempt" } else { "attempts" };
+                                format!(" [{}, {}, {} {}]", time_str, cost_str, attempts, attempt_word)
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
+                        };
+                    println!("  {} {} — {}{}{}", icon, step.id, step.title, suffix, timing_suffix);
                 }
             }
         }
