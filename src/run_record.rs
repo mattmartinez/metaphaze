@@ -304,4 +304,66 @@ mod tests {
         assert_eq!(parsed.error, None);
         assert_eq!(parsed.duration_ms, 500);
     }
+
+    #[test]
+    fn test_token_fields_roundtrip() {
+        let record = RunRecord {
+            id: Uuid::new_v4().to_string(),
+            phase_id: "P001".to_string(),
+            track_id: "TR01".to_string(),
+            step_id: "ST01".to_string(),
+            stage: "execute".to_string(),
+            model: "m".to_string(),
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:01Z".to_string(),
+            duration_ms: 100,
+            cost_usd: Some(0.05),
+            num_turns: Some(2),
+            outcome: "success".to_string(),
+            error: None,
+            input_tokens: Some(1000),
+            output_tokens: Some(500),
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        let parsed: RunRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.input_tokens, Some(1000));
+        assert_eq!(parsed.output_tokens, Some(500));
+    }
+
+    #[test]
+    fn test_token_fields_backward_compat() {
+        // JSON without token fields should deserialize to None via #[serde(default)]
+        let json = r#"{"id":"abc","phase_id":"P001","track_id":"TR01","step_id":"ST01","stage":"execute","model":"m","started_at":"2026-01-01T00:00:00Z","finished_at":"2026-01-01T00:00:01Z","duration_ms":100,"cost_usd":0.01,"num_turns":1,"outcome":"success","error":null}"#;
+        let parsed: RunRecord = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.input_tokens, None);
+        assert_eq!(parsed.output_tokens, None);
+    }
+
+    #[test]
+    fn test_phase_summary_aggregates_tokens() {
+        let records = vec![
+            RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P001".to_string(), track_id: "TR01".to_string(), step_id: "ST01".to_string(), stage: "execute".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:00Z".to_string(), finished_at: "2026-01-01T00:00:01Z".to_string(), duration_ms: 100, cost_usd: Some(0.01), num_turns: Some(1), outcome: "success".to_string(), error: None, input_tokens: Some(1000), output_tokens: Some(200) },
+            RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P001".to_string(), track_id: "TR01".to_string(), step_id: "ST02".to_string(), stage: "verify".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:02Z".to_string(), finished_at: "2026-01-01T00:00:03Z".to_string(), duration_ms: 200, cost_usd: Some(0.02), num_turns: Some(1), outcome: "success".to_string(), error: None, input_tokens: Some(500), output_tokens: Some(100) },
+            RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P002".to_string(), track_id: "TR01".to_string(), step_id: "ST01".to_string(), stage: "execute".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:04Z".to_string(), finished_at: "2026-01-01T00:00:05Z".to_string(), duration_ms: 300, cost_usd: Some(0.03), num_turns: Some(1), outcome: "success".to_string(), error: None, input_tokens: None, output_tokens: None },
+        ];
+        let summaries = phase_summaries(&records);
+        assert_eq!(summaries.len(), 2);
+        let p1 = summaries.iter().find(|s| s.phase_id == "P001").unwrap();
+        assert_eq!(p1.input_tokens, 1500);
+        assert_eq!(p1.output_tokens, 300);
+        let p2 = summaries.iter().find(|s| s.phase_id == "P002").unwrap();
+        assert_eq!(p2.input_tokens, 0);
+        assert_eq!(p2.output_tokens, 0);
+    }
+
+    #[test]
+    fn test_total_project_cost() {
+        let records = vec![
+            RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P001".to_string(), track_id: "TR01".to_string(), step_id: "ST01".to_string(), stage: "execute".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:00Z".to_string(), finished_at: "2026-01-01T00:00:01Z".to_string(), duration_ms: 100, cost_usd: Some(1.50), num_turns: Some(1), outcome: "success".to_string(), error: None, input_tokens: None, output_tokens: None },
+            RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P001".to_string(), track_id: "TR01".to_string(), step_id: "ST02".to_string(), stage: "verify".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:02Z".to_string(), finished_at: "2026-01-01T00:00:03Z".to_string(), duration_ms: 200, cost_usd: Some(2.25), num_turns: Some(1), outcome: "success".to_string(), error: None, input_tokens: None, output_tokens: None },
+            RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P002".to_string(), track_id: "TR01".to_string(), step_id: "ST01".to_string(), stage: "execute".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:04Z".to_string(), finished_at: "2026-01-01T00:00:05Z".to_string(), duration_ms: 300, cost_usd: None, num_turns: None, outcome: "error".to_string(), error: Some("boom".to_string()), input_tokens: None, output_tokens: None },
+        ];
+        let total = total_project_cost(&records);
+        assert!((total - 3.75).abs() < 1e-9);
+    }
 }

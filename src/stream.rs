@@ -345,4 +345,44 @@ mod tests {
         let event = parse_stream_line(line).expect("should parse");
         assert_eq!(event.model_name(), None);
     }
+
+    #[test]
+    fn test_message_start_with_usage() {
+        let line = r#"{"type":"message_start","message":{"model":"claude-sonnet-4-6","usage":{"input_tokens":1234,"output_tokens":56}}}"#;
+        let event = parse_stream_line(line).expect("should parse");
+        if let StreamEvent::MessageStart { message } = event {
+            let usage = message.usage.expect("usage should be present");
+            assert_eq!(usage.input_tokens, Some(1234));
+            assert_eq!(usage.output_tokens, Some(56));
+        } else {
+            panic!("expected MessageStart variant");
+        }
+    }
+
+    #[test]
+    fn test_message_start_without_usage() {
+        let line = r#"{"type":"message_start","message":{"model":"claude-opus-4-6"}}"#;
+        let event = parse_stream_line(line).expect("should parse");
+        if let StreamEvent::MessageStart { message } = event {
+            assert!(message.usage.is_none());
+        } else {
+            panic!("expected MessageStart variant");
+        }
+    }
+
+    #[test]
+    fn test_result_with_tokens() {
+        let line = r#"{"type":"result","result":"done","cost_usd":0.05,"duration_ms":2000,"num_turns":4,"input_tokens":8000,"output_tokens":1500}"#;
+        let event = parse_stream_line(line).expect("should parse");
+        if let StreamEvent::Result { result, cost_usd, duration_ms, num_turns, input_tokens, output_tokens } = event {
+            assert_eq!(result, "done");
+            assert_eq!(cost_usd, Some(0.05));
+            assert_eq!(duration_ms, Some(2000));
+            assert_eq!(num_turns, Some(4));
+            assert_eq!(input_tokens, Some(8000));
+            assert_eq!(output_tokens, Some(1500));
+        } else {
+            panic!("expected Result variant");
+        }
+    }
 }
