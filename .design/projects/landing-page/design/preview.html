@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>metaphaze landing page — design preview</title>
+<style>
+  :root {
+    --mz-bg:        #0a0a0a;
+    --mz-fg:        #ededed;
+    --mz-fg-muted:  #8a8a8a;
+    --mz-border:    #2a2a2a;
+    --mz-signal:    #5fb878;
+    --mz-warn:      #d4a017;
+    --mz-error:     #b8860b;
+    --font-mono:    "JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    --text-xxs:     0.75rem;
+    --text-xs:      0.8125rem;
+    --text-sm:      0.875rem;
+    --text-base:    1rem;
+    --text-lg:      1.125rem;
+    --text-xl:      1.25rem;
+    --text-2xl:     1.5rem;
+    --text-3xl:     1.875rem;
+    --text-5xl:     3rem;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --mz-bg:        #fafafa;
+      --mz-fg:        #0a0a0a;
+      --mz-fg-muted:  #6a6a6a;
+      --mz-border:    #e0e0e0;
+      --mz-signal:    #2e8b57;
+    }
+  }
+
+  @keyframes mz-cursor-blink {
+    0%, 49.99% { opacity: 1; }
+    50%, 100%  { opacity: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .mz-cursor { animation: none !important; opacity: 1; }
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; border-radius: 0 !important; }
+
+  html, body {
+    font-family: var(--font-mono);
+    background: var(--mz-bg);
+    color: var(--mz-fg);
+    font-size: var(--text-base);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── layout ── */
+  .container {
+    max-width: 48rem;
+    margin: 0 auto;
+    padding: 0 1rem;
+  }
+
+  /* ── nav ── */
+  .nav-bar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    border-bottom: 1px solid var(--mz-border);
+    background: var(--mz-bg);
+    z-index: 100;
+    height: 48px;
+    display: flex;
+    align-items: center;
+  }
+
+  .nav-inner {
+    max-width: 48rem;
+    margin: 0 auto;
+    padding: 0 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .nav-logo {
+    font-size: var(--text-base);
+    font-weight: 700;
+    color: var(--mz-fg);
+    text-decoration: none;
+    font-family: var(--font-mono);
+  }
+
+  .nav-logo .mz-cursor {
+    color: var(--mz-signal);
+    animation: mz-cursor-blink 1.06s step-end infinite;
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 1.5rem;
+    list-style: none;
+  }
+
+  .nav-links a {
+    color: var(--mz-fg);
+    text-decoration: none;
+    font-size: var(--text-sm);
+    font-family: var(--font-mono);
+  }
+
+  .nav-links a:hover {
+    text-decoration: underline;
+  }
+
+  .nav-links a:hover::before {
+    content: "> ";
+  }
+
+  /* ── main content ── */
+  main {
+    padding-top: 80px;
+  }
+
+  section {
+    padding: 4rem 0;
+    border-bottom: 1px solid var(--mz-border);
+  }
+
+  section:last-child {
+    border-bottom: none;
+  }
+
+  /* ── section headings ── */
+  h2 {
+    font-size: var(--text-2xl);
+    font-weight: 700;
+    color: var(--mz-fg);
+    margin-bottom: 0.5rem;
+    text-transform: lowercase;
+  }
+
+  .section-rule {
+    border: none;
+    border-top: 1px solid var(--mz-border);
+    margin-bottom: 2rem;
+  }
+
+  /* ── hero ── */
+  .hero-logo {
+    font-size: var(--text-5xl);
+    font-weight: 700;
+    color: var(--mz-fg);
+    margin-bottom: 1.5rem;
+    font-family: var(--font-mono);
+    line-height: 1;
+  }
+
+  .hero-logo .mz-cursor {
+    color: var(--mz-signal);
+    animation: mz-cursor-blink 1.06s step-end infinite;
+  }
+
+  .manifesto {
+    font-size: var(--text-base);
+    color: var(--mz-fg);
+    margin-bottom: 2rem;
+    max-width: 42rem;
+  }
+
+  /* ── pane ── */
+  .pane {
+    border: 1px solid var(--mz-border);
+    background: var(--mz-bg);
+    margin-bottom: 1.5rem;
+  }
+
+  .pane-title {
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--mz-border);
+    font-size: var(--text-xs);
+    color: var(--mz-fg-muted);
+    font-family: var(--font-mono);
+  }
+
+  .pane-body {
+    padding: 1rem 1.25rem;
+  }
+
+  /* ── code block ── */
+  .code-block {
+    background: var(--mz-border);
+    color: var(--mz-fg);
+    border: 1px solid var(--mz-border);
+    padding: 1rem 1.25rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    white-space: pre;
+    overflow-x: auto;
+    position: relative;
+  }
+
+  .code-block .prompt {
+    color: var(--mz-fg-muted);
+    user-select: none;
+  }
+
+  .code-block .accent {
+    color: var(--mz-signal);
+  }
+
+  .code-block-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.4rem 1.25rem;
+    border-bottom: 1px solid var(--mz-border);
+    font-size: var(--text-xs);
+    color: var(--mz-fg-muted);
+    background: var(--mz-border);
+  }
+
+  /* ── buttons ── */
+  .mz-btn {
+    background: transparent;
+    border: none;
+    color: var(--mz-fg);
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .mz-btn::before { content: "[ "; color: var(--mz-fg-muted); }
+  .mz-btn::after  { content: " ]"; color: var(--mz-fg-muted); }
+
+  .mz-btn:hover {
+    background: var(--mz-fg);
+    color: var(--mz-bg);
+  }
+
+  .mz-btn:hover::before,
+  .mz-btn:hover::after {
+    color: var(--mz-bg);
+  }
+
+  /* ── badges ── */
+  .badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+  }
+
+  .badge::before { content: "["; color: var(--mz-fg); }
+  .badge::after  { content: "]"; color: var(--mz-fg); }
+
+  .badge-ok        { color: var(--mz-signal); }
+  .badge-warn      { color: var(--mz-warn); }
+  .badge-error     { color: var(--mz-error); }
+  .badge-first     { color: var(--mz-signal); }
+  .badge-third     { color: var(--mz-error); }
+
+  /* ── vhs placeholder ── */
+  .vhs-placeholder {
+    background: var(--mz-border);
+    min-height: 300px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--mz-fg-muted);
+    font-size: var(--text-sm);
+    font-family: var(--font-mono);
+    border: 1px dashed var(--mz-fg-muted);
+  }
+
+  /* ── phase transition ── */
+  .phase-transition {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: 1.6;
+    color: var(--mz-fg);
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  /* ── comparison table ── */
+  .comparison-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+  }
+
+  .comparison-table th {
+    text-align: left;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--mz-border);
+    color: var(--mz-fg-muted);
+    font-weight: 400;
+    font-size: var(--text-xs);
+  }
+
+  .comparison-table td {
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--mz-border);
+    color: var(--mz-fg);
+    vertical-align: top;
+  }
+
+  .comparison-table tr:last-child td {
+    border-bottom: none;
+  }
+
+  .comparison-table td:first-child {
+    color: var(--mz-fg-muted);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+  }
+
+  /* ── prose ── */
+  p {
+    color: var(--mz-fg);
+    margin-bottom: 1rem;
+    max-width: 60ch;
+  }
+
+  p:last-child { margin-bottom: 0; }
+
+  /* ── diagram ── */
+  .diagram {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+    color: var(--mz-fg);
+    white-space: pre;
+    overflow-x: auto;
+  }
+
+  /* ── prereqs list ── */
+  .prereq-list {
+    list-style: none;
+    margin-bottom: 1.5rem;
+  }
+
+  .prereq-list li {
+    font-size: var(--text-sm);
+    color: var(--mz-fg);
+    margin-bottom: 0.25rem;
+  }
+
+  .prereq-list li::before {
+    content: "› ";
+    color: var(--mz-fg-muted);
+  }
+
+  /* ── docs link section ── */
+  .docs-link-section {
+    padding: 2rem 0;
+    text-align: left;
+    border-top: 1px dashed var(--mz-border);
+    border-bottom: none;
+  }
+
+  .docs-link-section a {
+    color: var(--mz-fg);
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+    text-decoration: none;
+  }
+
+  .docs-link-section a:hover {
+    text-decoration: underline;
+  }
+
+  .docs-link-section a::before { content: "["; color: var(--mz-fg-muted); }
+  .docs-link-section a::after  { content: "]"; color: var(--mz-fg-muted); }
+
+  .docs-link-section .arrow {
+    color: var(--mz-fg-muted);
+    margin: 0 0.5rem;
+  }
+
+  .docs-desc {
+    color: var(--mz-fg-muted);
+    font-size: var(--text-sm);
+    display: inline;
+  }
+
+  /* ── footer ── */
+  footer {
+    border-top: 1px solid var(--mz-border);
+    padding: 3rem 0;
+  }
+
+  .footer-links {
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+    font-size: var(--text-sm);
+  }
+
+  .footer-links a {
+    color: var(--mz-fg);
+    text-decoration: none;
+    font-family: var(--font-mono);
+  }
+
+  .footer-links a::before { content: "["; color: var(--mz-fg-muted); }
+  .footer-links a::after  { content: "]"; color: var(--mz-fg-muted); }
+
+  .footer-links a:hover { text-decoration: underline; }
+
+  .footer-sep {
+    color: var(--mz-fg-muted);
+  }
+
+  .refusals {
+    color: var(--mz-fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.8;
+    margin-bottom: 1rem;
+    max-width: 60ch;
+  }
+
+  .footer-manifesto {
+    color: var(--mz-fg-muted);
+    font-size: var(--text-sm);
+    margin-bottom: 0.5rem;
+  }
+
+  .footer-build {
+    color: var(--mz-fg-muted);
+    font-size: var(--text-xxs);
+    opacity: 0.7;
+  }
+
+  /* ── screen labels (preview only) ── */
+  .preview-label {
+    background: var(--mz-signal);
+    color: var(--mz-bg);
+    font-size: var(--text-xxs);
+    padding: 2px 6px;
+    font-family: var(--font-mono);
+    margin-bottom: 0.5rem;
+    display: inline-block;
+  }
+
+  /* ── sidebar (preview only) ── */
+  .preview-sidebar {
+    position: fixed;
+    left: 0;
+    top: 48px;
+    width: 180px;
+    height: calc(100vh - 48px);
+    background: var(--mz-bg);
+    border-right: 1px solid var(--mz-border);
+    padding: 1rem;
+    overflow-y: auto;
+    font-size: var(--text-xxs);
+    font-family: var(--font-mono);
+  }
+
+  .preview-sidebar h3 {
+    color: var(--mz-fg-muted);
+    font-weight: 400;
+    margin-bottom: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: var(--text-xxs);
+  }
+
+  .preview-sidebar a {
+    display: block;
+    color: var(--mz-fg-muted);
+    text-decoration: none;
+    padding: 0.2rem 0;
+  }
+
+  .preview-sidebar a:hover {
+    color: var(--mz-fg);
+  }
+
+  .preview-sidebar a.active {
+    color: var(--mz-signal);
+  }
+
+  .preview-main {
+    margin-left: 180px;
+  }
+
+  @media (max-width: 860px) {
+    .preview-sidebar { display: none; }
+    .preview-main { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+
+<!-- sidebar: section TOC (preview only) -->
+<nav class="preview-sidebar" aria-label="design preview navigation">
+  <h3>sections</h3>
+  <a href="#hero">§1 hero</a>
+  <a href="#what">§2 what it does</a>
+  <a href="#why">§3 why different</a>
+  <a href="#install">§4 install</a>
+  <a href="#docs">§5 docs link</a>
+  <a href="#footer-section">footer</a>
+</nav>
+
+<div class="preview-main">
+
+<!-- ── nav bar ── -->
+<nav class="nav-bar" aria-label="primary navigation">
+  <div class="nav-inner">
+    <a class="nav-logo" href="#hero" aria-label="metaphaze home">mz<span class="mz-cursor" aria-hidden="true">▌</span></a>
+    <ul class="nav-links">
+      <li><a href="#" aria-label="documentation">/docs</a></li>
+      <li><a href="#" aria-label="source code on GitHub">/source</a></li>
+    </ul>
+  </div>
+</nav>
+
+<main id="main">
+<div class="container">
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- §1 HERO                                                  -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<section id="hero" aria-label="hero">
+  <span class="preview-label">screen-01 / §1 hero</span>
+
+  <!-- logo -->
+  <div class="hero-logo" role="heading" aria-level="1">
+    mz<span class="mz-cursor" aria-hidden="true">▌</span>
+  </div>
+
+  <!-- manifesto -->
+  <p class="manifesto">
+    the orchestrator runs outside the loop. claude builds. mz drives.
+  </p>
+
+  <!-- install teaser code block -->
+  <div class="pane" style="margin-bottom: 2rem;">
+    <div class="code-block-header">
+      <span>install teaser</span>
+      <button class="mz-btn" onclick="copyInstall(this)" aria-label="copy install command">copy</button>
+    </div>
+    <div class="code-block"><span class="prompt">$ </span>cargo install --git https://github.com/mattmartinez/<span class="accent">metaphaze</span></div>
+  </div>
+
+  <!-- VHS recording frame -->
+  <div class="pane">
+    <div class="pane-title">╌ mz auto ╌</div>
+    <div class="pane-body">
+      <div class="vhs-placeholder" role="img" aria-label="VHS terminal recording placeholder — will contain .webm of mz auto running">
+        <span>[ vhs recording — /vhs/demo-desktop.webm ]<br>autoplay · muted · loop · 1600×900</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- phase transition screenshot -->
+  <div class="pane">
+    <div class="pane-title">what a phase transition looks like</div>
+    <div class="pane-body">
+      <figure role="img" aria-label="example phase transition screen showing 6 project phases: brief, research, and design complete; critique, build, review pending">
+        <pre class="phase-transition" aria-hidden="true">╔═══════════════════════════════════════════════════════════╗
+║  metaphaze — phase 3/6 complete                          ║
+║                                                          ║
+║  ◆ brief         complete   2026-04-08 14:23             ║
+║  ◆ research      complete   2026-04-08 14:31             ║
+║  ◆ design        complete   2026-04-08 15:12             ║
+║  ◇ critique      pending    —                            ║
+║  ◇ build         pending    —                            ║
+║  ◇ review        pending    —                            ║
+║                                                          ║
+║  src/                                                    ║
+║  ├── main.rs                              [OK]           ║
+║  ├── orchestrator.rs                      [OK]           ║
+║  └── tui/                                                ║
+║      └── theme.rs                         [OK]           ║
+╚═══════════════════════════════════════════════════════════╝</pre>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- §2 WHAT IT DOES                                         -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<section id="what" aria-label="what it does">
+  <span class="preview-label">§2 what it does</span>
+  <h2>what it does</h2>
+  <hr class="section-rule">
+
+  <p>
+    metaphaze is a command-line orchestrator that drives claude code autonomously
+    through multi-phase software projects. you define the project in a brief.
+    metaphaze runs the phases — research, design, build, review — returning only
+    when the work is done.
+  </p>
+  <p>
+    the orchestrator runs outside the loop so you can step away from the keyboard
+    and come back to working code.
+  </p>
+
+  <div class="pane" style="margin-top: 2rem;">
+    <div class="pane-title">the loop</div>
+    <div class="pane-body">
+      <figure role="img" aria-label="diagram showing mz orchestrating claude code in a loop: you give mz a brief, mz drives claude through phases, phase outputs are committed to disk">
+        <pre class="diagram" aria-hidden="true">       you
+        │
+        ▼
+  ┌─────────────┐       ┌─────────────────────────────────────────┐
+  │    mz       │──────▶│  claude code                            │
+  │  drives     │       │  builds (one phase at a time)           │
+  └─────────────┘◀──────┤                                         │
+        │                └─────────────────────────────────────────┘
+        ▼
+  phase output
+  (committed to disk)</pre>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- §3 WHY IT'S DIFFERENT                                   -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<section id="why" aria-label="why it's different">
+  <span class="preview-label">§3 why it's different</span>
+  <h2>why it's different</h2>
+  <hr class="section-rule">
+
+  <div class="pane">
+    <div class="pane-title">mz vs. other harnesses</div>
+    <div class="pane-body" style="padding: 0;">
+      <table class="comparison-table" role="table">
+        <caption class="sr-only" style="display:none">Comparison of metaphaze versus other AI coding harnesses</caption>
+        <thead>
+          <tr>
+            <th scope="col">property</th>
+            <th scope="col">mz</th>
+            <th scope="col">other harnesses</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>api access</td>
+            <td><span class="badge badge-first">FIRST-PARTY</span></td>
+            <td><span class="badge badge-third">THIRD-PARTY</span></td>
+          </tr>
+          <tr>
+            <td>config file</td>
+            <td><span class="badge badge-ok">OK</span> none</td>
+            <td><span class="badge badge-error">ERR</span> required</td>
+          </tr>
+          <tr>
+            <td>binary size</td>
+            <td><span class="badge badge-ok">OK</span> 3.2 MB</td>
+            <td><span class="badge badge-warn">WARN</span> 40–200 MB</td>
+          </tr>
+          <tr>
+            <td>license</td>
+            <td><span class="badge badge-ok">OK</span> MIT</td>
+            <td><span class="badge badge-warn">WARN</span> proprietary</td>
+          </tr>
+          <tr>
+            <td>telemetry</td>
+            <td><span class="badge badge-ok">OK</span> none</td>
+            <td><span class="badge badge-error">ERR</span> yes</td>
+          </tr>
+          <tr>
+            <td>runs offline</td>
+            <td><span class="badge badge-ok">OK</span> yes</td>
+            <td><span class="badge badge-error">ERR</span> cloud-dependent</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <p style="margin-top: 1rem; font-size: var(--text-xs); color: var(--mz-fg-muted);">
+    <span class="badge badge-first">FIRST-PARTY</span>
+    <span style="margin-left: 0.5rem;">direct anthropic api. no wrapper, no proxy, no rate-limit reroute.</span>
+  </p>
+  <p style="font-size: var(--text-xs); color: var(--mz-fg-muted);">
+    <span class="badge badge-third">THIRD-PARTY</span>
+    <span style="margin-left: 0.5rem;">routes through a vendor api. pricing and availability not yours.</span>
+  </p>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- §4 INSTALL                                              -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<section id="install" aria-label="install">
+  <span class="preview-label">§4 install</span>
+  <h2>install</h2>
+  <hr class="section-rule">
+
+  <p style="font-size: var(--text-sm); font-weight: 600; color: var(--mz-fg-muted); margin-bottom: 0.75rem;">prerequisites</p>
+  <ul class="prereq-list">
+    <li>cargo 1.75 or later</li>
+    <li>ANTHROPIC_API_KEY set in your environment</li>
+  </ul>
+
+  <!-- install command -->
+  <div class="pane" style="margin-bottom: 1.5rem;">
+    <div class="code-block-header">
+      <span>install</span>
+      <button class="mz-btn" onclick="copyInstall(this)" aria-label="copy install command">copy</button>
+    </div>
+    <div class="code-block"><span class="prompt">$ </span>cargo install --git https://github.com/mattmartinez/<span class="accent">metaphaze</span></div>
+  </div>
+
+  <!-- verify -->
+  <div class="pane" style="margin-bottom: 1.5rem;">
+    <div class="code-block-header">
+      <span>verify</span>
+    </div>
+    <div class="code-block"><span class="prompt">$ </span>mz --version
+metaphaze 0.1.0</div>
+  </div>
+
+  <!-- first run -->
+  <div class="pane">
+    <div class="code-block-header">
+      <span>first run</span>
+    </div>
+    <div class="code-block"><span class="prompt">$ </span>mz status
+<span class="accent">[OK]</span>  api key found
+<span style="color: var(--mz-signal);">[OK]</span>  rust toolchain: cargo 1.78.0
+<span style="color: var(--mz-signal);">[OK]</span>  claude code: available
+<span style="color: var(--mz-signal);">●</span>     ready</div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- §5 DOCS LINK                                            -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<section id="docs" aria-label="documentation link" class="docs-link-section">
+  <span class="preview-label">§5 docs link</span>
+  <p>
+    <a href="#" aria-label="documentation">/docs</a>
+    <span class="arrow">→</span>
+    <span class="docs-desc">full documentation, api reference, and examples</span>
+  </p>
+</section>
+
+</div><!-- /container -->
+</main>
+
+<!-- ── footer ── -->
+<footer id="footer-section">
+  <div class="container">
+    <span class="preview-label">footer</span>
+
+    <div class="footer-links">
+      <a href="#" aria-label="MIT license">MIT</a>
+      <span class="footer-sep">·</span>
+      <a href="#" aria-label="source code on GitHub">github.com/mattmartinez/metaphaze</a>
+      <span class="footer-sep">·</span>
+      <a href="#" aria-label="generated with GSP">generated with gsp</a>
+    </div>
+
+    <p class="refusals">
+      no accounts · no cloud · no telemetry · no permission slips ·
+      no dashboards · no config files · no hallucinated toolchain
+    </p>
+
+    <p class="footer-manifesto">
+      the orchestrator runs outside the loop. claude builds. mz drives.
+    </p>
+
+    <p class="footer-build">
+      build: v0.1.0 · 2026-04-08
+    </p>
+  </div>
+</footer>
+
+</div><!-- /preview-main -->
+
+<script>
+function copyInstall(btn) {
+  const cmd = 'cargo install --git https://github.com/mattmartinez/metaphaze';
+  navigator.clipboard.writeText(cmd).then(() => {
+    const originalText = btn.textContent;
+    btn.textContent = 'copied';
+    setTimeout(() => { btn.textContent = originalText; }, 1500);
+  }).catch(() => {
+    // fallback: do nothing
+  });
+}
+
+// highlight active section in sidebar on scroll
+const sections = document.querySelectorAll('section[id]');
+const sidebarLinks = document.querySelectorAll('.preview-sidebar a');
+
+function updateActiveSection() {
+  const scrollY = window.scrollY + 80;
+  sections.forEach(section => {
+    const top = section.offsetTop;
+    const height = section.offsetHeight;
+    const id = section.getAttribute('id');
+    if (scrollY >= top && scrollY < top + height) {
+      sidebarLinks.forEach(link => {
+        link.classList.remove('active');
+        if (link.getAttribute('href') === '#' + id) {
+          link.classList.add('active');
+        }
+      });
+    }
+  });
+}
+
+window.addEventListener('scroll', updateActiveSection);
+updateActiveSection();
+</script>
+</body>
+</html>

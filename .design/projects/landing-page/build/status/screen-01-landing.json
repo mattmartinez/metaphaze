@@ -1,0 +1,50 @@
+{
+  "screen_id": "screen-01-landing",
+  "status": "complete",
+  "path": "app/page.tsx",
+  "target_file": "/Users/matt/Documents/bluehelixlab/metaphaze-www/app/page.tsx",
+  "build": {
+    "command": "npx next build",
+    "result": "success",
+    "framework": "Next.js 16.2.3",
+    "bundler": "Turbopack",
+    "typescript": "pass",
+    "routes_generated": ["/", "/_not-found"]
+  },
+  "sections": [
+    { "id": "hero", "aria_label": "hero", "status": "complete" },
+    { "id": "what-it-does", "aria_label": "what it does", "status": "complete" },
+    { "id": "why-different", "aria_label": "why it's different", "status": "complete" },
+    { "id": "install", "aria_label": "install", "status": "complete" },
+    { "id": "docs-link", "aria_label": "documentation", "status": "complete" }
+  ],
+  "components_used": [
+    "Cursor",
+    "Pane",
+    "StatusBadge",
+    "CodeBlock",
+    "PhaseTransitionScreen",
+    "ComparisonTable"
+  ],
+  "components_created": [],
+  "critique_fixes_applied": [
+    "docs link -> github readme",
+    "clipboard try/catch (pre-existing in CodeBlock)",
+    "section 5 dashed hr",
+    "comparison table caption (pre-existing)",
+    "light-mode VHS html comment",
+    "legend paragraph ids for aria-describedby"
+  ],
+  "known_placeholders": [
+    "/public/vhs/demo-desktop.webm (video file not yet created)"
+  ],
+  "accessibility": {
+    "skip_link": "layout.tsx",
+    "semantic_sections": true,
+    "figure_role_img_ascii_diagrams": true,
+    "video_aria_label_and_fallback": true,
+    "reduced_motion_handled": true,
+    "focus_visible_outlines": true
+  },
+  "timestamp": "2026-04-08T00:00:00Z"
+}

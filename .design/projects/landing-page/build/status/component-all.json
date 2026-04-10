@@ -1,0 +1,5 @@
+{
+  "status": "complete",
+  "components": ["Cursor", "Pane", "StatusBadge", "CodeBlock", "PhaseTransitionScreen", "ComparisonTable", "BracketedButton"],
+  "timestamp": "2026-04-08T00:00:00Z"
+}
