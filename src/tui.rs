@@ -25,6 +25,20 @@ use ratatui::{
 use crate::events::{EventReceiver, EventSender, ProgressEvent};
 use crate::state::{ProjectState, StepStatus};
 
+/// Write a diagnostic line to /tmp/mz-stream-debug.log when MZ_STREAM_DEBUG is set.
+fn stream_debug_log(msg: &str) {
+    if std::env::var("MZ_STREAM_DEBUG").is_ok() {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/mz-stream-debug.log")
+        {
+            let _ = writeln!(f, "[tui] {}", msg);
+        }
+    }
+}
+
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -252,6 +266,7 @@ impl DashboardState {
             }
 
             ProgressEvent::TokenDelta { text } => {
+                let lines_before = self.output_lines.len();
                 if self.has_partial {
                     self.output_lines.pop_back();
                     self.has_partial = false;
@@ -266,6 +281,10 @@ impl DashboardState {
                     self.output_lines.push_back(OutputLine::Assistant(self.partial_line.clone()));
                     self.has_partial = true;
                 }
+                stream_debug_log(&format!(
+                    "TokenDelta: text_len={} output_lines {} -> {} has_partial={}",
+                    text.len(), lines_before, self.output_lines.len(), self.has_partial
+                ));
             }
 
             ProgressEvent::ExecutionFinished { completed, blocked } => {
@@ -389,8 +408,16 @@ where
     loop {
         // Drain pending events
         if let Some(ref rx) = app.receiver {
+            let mut dbg_drained: usize = 0;
             while let Ok(event) = rx.try_recv() {
+                dbg_drained += 1;
                 app.dashboard.update(event);
+            }
+            if dbg_drained > 0 {
+                stream_debug_log(&format!(
+                    "drain: {} events, output_lines={}",
+                    dbg_drained, app.dashboard.output_lines.len()
+                ));
             }
         }
 

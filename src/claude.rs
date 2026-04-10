@@ -6,6 +6,19 @@ use std::process::Command;
 use crate::events::EventSender;
 use crate::stream::{self, ContentBlock, DeltaContent, StreamEvent};
 
+/// Write a diagnostic line to /tmp/mz-stream-debug.log when MZ_STREAM_DEBUG is set.
+fn stream_debug_log(msg: &str) {
+    if std::env::var("MZ_STREAM_DEBUG").is_ok() {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/mz-stream-debug.log")
+        {
+            let _ = writeln!(f, "[claude] {}", msg);
+        }
+    }
+}
+
 pub struct ClaudeOptions {
     pub prompt: String,
     pub model: Option<String>,
@@ -104,12 +117,28 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
     let mut result_received = false;
     let mut fallback_lines: Vec<String> = Vec::new();
     let mut last_tool_summary: Option<String> = None;
+
+    // Diagnostic counters — written to /tmp/mz-stream-debug.log when MZ_STREAM_DEBUG is set.
+    let mut dbg_lines_total: usize = 0;
+    let mut dbg_content_block_delta: usize = 0;
+    let mut dbg_token_send_ok: usize = 0;
+    let mut dbg_token_send_err: usize = 0;
+    let mut dbg_tool_use: usize = 0;
+    let mut dbg_tool_result: usize = 0;
+    let mut dbg_other_parsed: usize = 0;
+
+    // Tracks whether any content_block_delta events were seen for the current assistant turn.
+    // If the CLI doesn't emit token-level deltas, we fall back to the assembled `assistant` event.
+    let mut seen_token_deltas = false;
+
     let reader = BufReader::new(child_stdout);
     for line in reader.lines() {
         match line {
             Ok(line) => {
+                dbg_lines_total += 1;
                 match stream::parse_stream_line(&line) {
                     Some(StreamEvent::Assistant { message }) => {
+                        dbg_other_parsed += 1;
                         let text: String = message.content.iter()
                             .filter_map(|block| {
                                 if let ContentBlock::Text { text } = block { Some(text.as_str()) } else { None }
@@ -120,16 +149,41 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                             if sender.is_none() {
                                 // Non-TUI: user already saw text token-by-token; just terminate the line
                                 eprintln!();
+                            } else if !seen_token_deltas {
+                                // TUI fallback: CLI didn't emit content_block_delta events.
+                                // Send the assembled text line-by-line so the output panel shows it.
+                                if let Some(tx) = sender {
+                                    stream_debug_log("assistant fallback: sending assembled text via AssistantText");
+                                    for line in text.lines() {
+                                        let _ = tx.send(crate::events::ProgressEvent::AssistantText {
+                                            text: line.to_string(),
+                                        });
+                                    }
+                                }
                             }
-                            // TUI path: skip — content already streamed token-by-token via TokenDelta
+                            // else: content already streamed token-by-token via TokenDelta
                         }
+                        // Reset per-turn flag so the next assistant turn is evaluated independently
+                        seen_token_deltas = false;
                     }
                     Some(StreamEvent::ContentBlockDelta { ref delta }) => {
+                        dbg_content_block_delta += 1;
+                        seen_token_deltas = true;
                         if let DeltaContent::TextDelta { text } = delta {
                             if let Some(tx) = sender {
-                                let _ = tx.send(crate::events::ProgressEvent::TokenDelta {
+                                let send_result = tx.send(crate::events::ProgressEvent::TokenDelta {
                                     text: text.clone(),
                                 });
+                                match send_result {
+                                    Ok(_) => dbg_token_send_ok += 1,
+                                    Err(_) => {
+                                        dbg_token_send_err += 1;
+                                        stream_debug_log(&format!(
+                                            "TokenDelta send FAILED (receiver dropped?), text={:?}",
+                                            &text[..text.len().min(40)]
+                                        ));
+                                    }
+                                }
                             } else {
                                 // Non-TUI: stream to stderr in real-time
                                 eprint!("{}", text.dimmed());
@@ -139,6 +193,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                         // Non-text deltas (input_json_delta) are ignored
                     }
                     Some(ref parsed @ StreamEvent::ToolUse { ref tool, .. }) => {
+                        dbg_tool_use += 1;
                         let summary = parsed.tool_use_summary().unwrap_or_else(|| tool.clone());
                         last_tool_summary = Some(summary.clone());
                         if let Some(tx) = sender {
@@ -148,6 +203,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                         }
                     }
                     Some(StreamEvent::ToolResult { tool, .. }) => {
+                        dbg_tool_result += 1;
                         let result_tool = last_tool_summary.take().unwrap_or_else(|| tool.clone());
                         if let Some(tx) = sender {
                             let _ = tx.send(crate::events::ProgressEvent::ToolResultReceived { tool: result_tool.clone() });
@@ -156,6 +212,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                         }
                     }
                     Some(StreamEvent::Result { result, .. }) => {
+                        dbg_other_parsed += 1;
                         stdout = result;
                         result_received = true;
                         if let Some(tx) = sender {
@@ -165,6 +222,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                         }
                     }
                     Some(StreamEvent::Error { error }) => {
+                        dbg_other_parsed += 1;
                         let msg = format!("⚠ {}", error);
                         if let Some(tx) = sender {
                             let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: msg.clone() });
@@ -173,6 +231,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                         }
                     }
                     Some(StreamEvent::MessageStart { message }) => {
+                        dbg_other_parsed += 1;
                         if let Some(tx) = sender {
                             let _ = tx.send(crate::events::ProgressEvent::ModelDetected {
                                 model: message.model.clone(),
@@ -180,9 +239,11 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                         }
                     }
                     Some(StreamEvent::User { .. }) | Some(StreamEvent::System { .. }) => {
+                        dbg_other_parsed += 1;
                         // Ignore user/system-level events
                     }
                     None => {
+                        stream_debug_log(&format!("fallback (unparsed): {}", &line[..line.len().min(120)]));
                         fallback_lines.push(line);
                     }
                 }
@@ -190,6 +251,13 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
             Err(e) => eprintln!("{} read error: {}", "  [claude]".dimmed(), e),
         }
     }
+
+    stream_debug_log(&format!(
+        "stream summary: lines={} content_block_delta={} token_send_ok={} token_send_err={} \
+         tool_use={} tool_result={} other_parsed={} fallback={}",
+        dbg_lines_total, dbg_content_block_delta, dbg_token_send_ok, dbg_token_send_err,
+        dbg_tool_use, dbg_tool_result, dbg_other_parsed, fallback_lines.len()
+    ));
 
     let status = child.wait().context("Failed to wait for claude")?;
     let stderr = stderr_handle.join().unwrap_or_default();
