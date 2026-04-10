@@ -1,0 +1,458 @@
+# metaphaze — canonical brand preset
+# generated: 2026-04-10
+# source of truth: tokens, intensity, patterns, constraints, effects, rust_bindings, web_bindings
+#
+# dual target: rust + ratatui + crossterm (TUI) and tailwind v4 + css custom properties (web).
+# every token resolves to both surfaces — rust constants for ratatui, css vars for the landing
+# page and README rendering. the .yml is the single source both surfaces derive from.
+
+name: metaphaze
+description: Brutalist · honest · technical — spec-driven context engine for Claude Code
+tags: [developer, monospace, dark, minimal, technical, brutalist]
+extends: terminal  # with overrides documented inline — see comments per value
+
+tokens:
+  color:
+    # neutral + single accent, terminal/ansi discipline.
+    # traces to identity/color-system.md — the five locked anchors.
+    primary:        "#5fb878"   # mz.signal — muted terminal green, NOT #33ff00 (rejected as hollywood hacker)
+    secondary:      "#8a8a8a"   # mz.dust — no second accent, secondary == mid-gray (no #3b82f6 dev-tool blue)
+    accent:         "#5fb878"   # same as primary — single-accent discipline (no third color anywhere)
+    background:     "#0a0a0a"   # mz.black — warm off-black, never pure #000000
+    surface:        "#0a0a0a"   # mz.black — flat panes, no elevated surface
+    on-primary:     "#0a0a0a"   # inverted-video button text
+    on-background:  "#ededed"   # mz.bone — warm off-white, never pure #ffffff
+    error:          "#b8860b"   # mz.amber.error.dark — amber, never red (errors are recoverable, not catastrophic)
+    success:        "#5fb878"   # mz.signal
+    warning:        "#d4a017"   # mz.amber.warn
+    info:           "#8a8a8a"   # mz.dust — info is annotation, not signal (no --mz-info token)
+    muted:          "#8a8a8a"   # mz.dust
+    border:         "#2a2a2a"   # mz.slate — structural only, never a text color
+
+  typography:
+    # one typeface, everywhere. traces to identity/typography.md.
+    # berkeley mono is preferred (paid), jetbrains mono is the free fallback.
+    # both brand faces must load before ui-monospace. no sans fallback ever.
+    font-family-primary: '"Berkeley Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+    font-family-mono:    '"Berkeley Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'  # same face, not a second family
+    font-weight-body:    400
+    font-weight-heading: 600
+    font-weight-display: 700
+    font-size-base:      "16px"      # not 14px — the senior operator reads long-form, 16px survives minute 90
+    line-height-base:    1.6
+    scale-ratio:         1.25        # major third — modest, honest, not poster-drama
+    headline-case:       lowercase   # OVERRIDE vs terminal preset (which used ALL CAPS) — lowercase is voice
+
+  shape:
+    # zero radius everywhere. every corner is sharp.
+    border-radius-sm:  "0"    # OVERRIDE vs terminal preset "4px" — the rule is 0px radius everywhere
+    border-radius-md:  "0"    # OVERRIDE vs terminal preset "6px"
+    border-radius-lg:  "0"    # OVERRIDE vs terminal preset "8px"
+    border-width:      "1px"
+    border-color:      "#2a2a2a"  # mz.slate
+
+  elevation:
+    # no drop shadows. terminals don't have drop shadows.
+    shadow-sm:  "none"   # OVERRIDE vs terminal preset "0 1px 3px rgba(0,0,0,0.3)" — flat, no elevation illusion
+    shadow-md:  "none"   # OVERRIDE vs terminal preset
+    shadow-lg:  "none"   # OVERRIDE vs terminal preset
+    shadow-xl:  "none"   # OVERRIDE vs terminal preset
+
+  spacing:
+    base: 8
+    scale: [4, 8, 12, 16, 24, 32, 48, 64, 96]
+
+  motion:
+    # only the cursor blinks. nothing else animates.
+    duration-instant: "0ms"
+    duration-fast:    "100ms"
+    duration-normal:  "200ms"
+    easing:           "step-end"  # OVERRIDE vs terminal preset "ease" — cursor snaps, no smooth easing
+
+# 11-step ramps from identity/palettes.json — for supporting shades only.
+# brand-canonical anchors always override the scale-computed 500 stop.
+palette_scales:
+  mz-black:
+    50:  "#e2e2e2"
+    100: "#c9c9c9"
+    200: "#939393"
+    300: "#636363"
+    400: "#353535"
+    500: "#0a0a0a"   # canonical anchor
+    600: "#070707"
+    700: "#070707"
+    800: "#040404"
+    900: "#040404"
+    950: "#000000"
+  mz-bone:
+    50:  "#fcfcfc"
+    100: "#fcfcfc"
+    200: "#f6f6f6"
+    300: "#f3f3f3"
+    400: "#f1f1f1"
+    500: "#ededed"   # canonical anchor
+    600: "#b9b9b9"
+    700: "#868686"
+    800: "#575757"
+    900: "#2e2e2e"
+    950: "#191919"
+  mz-signal:
+    50:  "#f7fdf9"
+    100: "#eef9f3"
+    200: "#d9f1e5"
+    300: "#c4e9d7"
+    400: "#add7c3"
+    500: "#5fb878"   # canonical anchor (dark mode)
+    600: "#4a9b60"
+    700: "#367d4b"   # permitted body-text fallback on light mode
+    800: "#2e8b57"   # canonical anchor (light mode)
+    900: "#1d2622"
+    950: "#131a15"
+  mz-amber:
+    50:  "#fef9f0"
+    100: "#fef3e0"
+    200: "#fdd9b5"
+    300: "#fcbb80"
+    400: "#faa855"
+    500: "#d4a017"   # canonical warning
+    600: "#b8860b"   # canonical error (dark)
+    700: "#c85a14"
+    800: "#8b6508"   # canonical error (light)
+    900: "#6b2305"
+    950: "#4a1501"
+
+dark_mode:
+  # default. the senior operator lives in a dark terminal.
+  color:
+    background:    "#0a0a0a"
+    surface:       "#0a0a0a"
+    border:        "#2a2a2a"
+    on-background: "#ededed"
+    primary:       "#5fb878"
+    warning:       "#d4a017"
+    error:         "#b8860b"
+
+light_mode:
+  # OVERRIDE vs terminal preset (which said "light mode: mandatory dark") —
+  # metaphaze supports light mode as a literal inversion. the senior operator
+  # who runs a light terminal during the day should still see the brand.
+  color:
+    background:    "#fafafa"
+    surface:       "#fafafa"
+    border:        "#e0e0e0"
+    on-background: "#0a0a0a"
+    primary:       "#2e8b57"   # darker signal for AA contrast on #fafafa
+    warning:       "#b8860b"
+    error:         "#8b6508"
+
+intensity:
+  variance: 2    # rigid grid, uniform pane structure. LOWER than terminal preset (3) — no split panes, single column
+  motion:   1    # cursor blink only. LOWER than terminal preset (4) — no typewriter, no glitch, no scanline-hum
+  density:  7    # dense monospace layout, tight information — same as terminal preset
+
+patterns:
+  card:
+    border:     "1px solid var(--mz-border)"
+    shadow:     "none"
+    radius:     "0"
+    background: "var(--mz-bg)"   # OVERRIDE vs terminal preset {color.surface} — surface == bg, no elevated fill
+    header:     "box-drawing title bar (┌─ title ──┐) or inverted bar"
+
+  button-primary:
+    background: "transparent"               # OVERRIDE vs terminal preset {color.primary} — no solid fills, bracketed text only
+    border:     "none"                      # OVERRIDE vs terminal preset "1px solid primary"
+    shadow:     "none"
+    text:       "lowercase bracketed monospace ([ initiate ])"   # OVERRIDE vs terminal preset uppercase — lowercase voice rule
+    radius:     "0"
+    hover:      "video-invert — background fills mz.bone, text becomes mz.black, cursor ▌ appears after the label"
+
+  button-secondary:
+    background: "transparent"
+    border:     "none"                      # OVERRIDE vs terminal preset "1px solid border" — no box, bracketed text only
+    shadow:     "none"
+    text:       "lowercase bracketed monospace ([ cancel ])"
+    radius:     "0"
+
+  input:
+    border:     "none — prompt-style ($ prefix or > prefix)"
+    radius:     "0"
+    background: "transparent"
+    focus:      "blinking block cursor ▌, no ring, no outline"
+    font:       "monospace always"
+
+  badge:
+    shape:      "0 radius, bracketed"
+    text:       "uppercase bracketed status codes ([OK] [ERR] [WARN])"   # caps reserved for badges only
+    decoration: "color matches status — signal green for [OK], amber warn for [WARN], deep amber for [ERR] (never red)"
+
+  nav:
+    style:      "bracketed links ([/about] [/docs] [/source])"
+    background: "transparent"
+    border:     "none"                      # OVERRIDE vs terminal preset "border-b 1px" — no tab-bar rule
+    hover:      "> prefix slides in from the left, underline appears, color stays mz.bone (no color change)"
+
+  code-block:
+    background: "var(--mz-border)"          # mz.slate — the only place two colors touch
+    border:     "1px solid var(--mz-border)"
+    radius:     "0"
+    font:       "monospace always"
+    prompt:     "$ or > prefix in mz.dust"
+    accent:     "at most one run in mz.signal per block (usually the command name)"
+
+  layout:
+    archetype:       "monospace-editorial"   # OVERRIDE vs terminal preset "terminal-panes" — single narrow column, reading-optimized
+    max-width:       "max-w-3xl"             # OVERRIDE vs terminal preset "max-w-6xl" — narrow, long-form reading
+    section-spacing: "py-16 to py-24"
+    grid-gap:        "gap-4 to gap-8"
+    surfaces:        "flat — no overlay, no scanlines, no phosphor"   # OVERRIDE vs terminal preset "CRT scanline overlay"
+    decoration:      "box-drawing diagrams, bracketed labels, status badges"
+    dividers:        "em-dash rules ( — ) or box-drawing horizontal lines (─)"
+
+constraints:
+  never:
+    - "non-monospace fonts (Inter, Geist Sans, system-ui — any sans for any text)"
+    - "border-radius > 0 anywhere"
+    - "drop shadows or colored shadows (shadow-sm/md/lg/xl all force to none)"
+    - "background images or photography"
+    - "linear-gradient, radial-gradient, conic-gradient, mesh gradient"
+    - "pure black #000000 or pure white #ffffff"
+    - "neon terminal green (#00ff00, #33ff00) — the terminal preset's default, explicitly rejected"
+    - "dev-tool blue (#3b82f6, #007acc, GitHub blue, Linear blue, Vercel blue)"
+    - "red for errors (use amber #b8860b — errors are recoverable states)"
+    - "CRT scanline overlay — rejected from terminal preset"
+    - "phosphor text glow, text-shadow glow effects — rejected from terminal preset"
+    - "typewriter reveal animations — rejected from terminal preset"
+    - "ALL CAPS headlines — caps reserved for [BADGE] codes only"
+    - "italics (monospace italics are typographically weak)"
+    - "smart quotes (straight quotes only — must survive paste-into-terminal)"
+    - "emoji (text substitutes always — brand survives LANG=C)"
+    - "icon libraries (Lucide, Heroicons, Phosphor, Feather, Material)"
+    - "mascots, illustrations, 3D renders, stock photography"
+    - "backdrop-filter, mix-blend-mode, CSS filter (blur, drop-shadow, grayscale, sepia, hue-rotate)"
+    - "marketing words: agentic, empower, transform, unlock, leverage, journey, ecosystem"
+    - "non-ASCII brackets (fullwidth, curly, lenticular) — only U+005B and U+005D"
+  always:
+    - "monospace font on every element (Berkeley Mono or JetBrains Mono)"
+    - "lowercase for headlines, nav, body copy, labels, error messages"
+    - "bracketed navigation links ([/about] [/docs] [/source])"
+    - "bracketed buttons ([ initiate ])"
+    - "status code badges in brackets ([OK] [ERR] [WARN])"
+    - "shell prompt prefixes on interactive elements ($ > ~)"
+    - "em-dash as structural divider ( — ), padded with spaces"
+    - "box-drawing characters for diagrams and borders (─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼)"
+    - "real TUI recordings (VHS, asciinema) as the hero asset"
+    - "manifesto preserved verbatim: the orchestrator runs outside the loop. claude builds. mz drives."
+    - "signal color (#5fb878) used on less than 1% of pixels per surface"
+    - "NO_COLOR environment variable respected — signal and amber drop out, brand still works in pure bone on black"
+
+effects:
+  interaction-vocabulary: [cursor-blink, video-invert, underline-reveal]
+
+  hover:
+    card:   "border color stays mz.slate — no hover state on static cards"
+    button: "video-invert — background fills mz.bone, text becomes mz.black"
+    link:   "underline appears, > prefix slides in from the left"
+
+  active:
+    button: "cursor ▌ appears after the label, no translate, no blink"
+
+  focus:
+    general: "no ring — blinking cursor ▌ indicates focus"
+
+  transition: "instant or step-end only — 0ms or 100ms, never smooth easing"
+
+  ambient:
+    - "cursor-blink — block cursor ▌ blinks 530ms on / 530ms off on live surfaces only (never in static media)"
+
+# rust bindings — ratatui constants for the TUI surface.
+# these are the canonical Color::Rgb values for every brand token.
+# copy these into src/theme.rs (or equivalent) and reference them from every
+# ratatui Style::default().fg(...).bg(...) call.
+rust_bindings:
+  color_ratatui: |
+    use ratatui::style::Color;
+
+    // neutrals — the five anchors
+    pub const MZ_BLACK:  Color = Color::Rgb(0x0a, 0x0a, 0x0a);  // #0a0a0a  bg
+    pub const MZ_BONE:   Color = Color::Rgb(0xed, 0xed, 0xed);  // #ededed  fg
+    pub const MZ_DUST:   Color = Color::Rgb(0x8a, 0x8a, 0x8a);  // #8a8a8a  fg-muted
+    pub const MZ_SLATE:  Color = Color::Rgb(0x2a, 0x2a, 0x2a);  // #2a2a2a  border
+
+    // the one accent
+    pub const MZ_SIGNAL: Color = Color::Rgb(0x5f, 0xb8, 0x78);  // #5fb878  signal / success
+
+    // semantic amber (warnings and recoverable errors only — never red)
+    pub const MZ_WARN:   Color = Color::Rgb(0xd4, 0xa0, 0x17);  // #d4a017  [WARN]
+    pub const MZ_ERROR:  Color = Color::Rgb(0xb8, 0x86, 0x0b);  // #b8860b  [ERR] (deep amber)
+
+    // light-mode anchors — for when the TUI detects a light-background terminal
+    pub const MZ_BG_LIGHT:     Color = Color::Rgb(0xfa, 0xfa, 0xfa);
+    pub const MZ_FG_LIGHT:     Color = Color::Rgb(0x0a, 0x0a, 0x0a);
+    pub const MZ_MUTED_LIGHT:  Color = Color::Rgb(0x6a, 0x6a, 0x6a);
+    pub const MZ_BORDER_LIGHT: Color = Color::Rgb(0xe0, 0xe0, 0xe0);
+    pub const MZ_SIGNAL_LIGHT: Color = Color::Rgb(0x2e, 0x8b, 0x57);
+    pub const MZ_WARN_LIGHT:   Color = Color::Rgb(0xb8, 0x86, 0x0b);
+    pub const MZ_ERROR_LIGHT:  Color = Color::Rgb(0x8b, 0x65, 0x08);
+
+  typography_ratatui: |
+    // monospace cell dimensions — in terminal cells, not pixels.
+    // ratatui is grid-native; every piece of text occupies whole cells.
+    // the scale values are for cell PADDING around typographic blocks, not glyph sizes.
+    pub const CELL_UNIT: u16 = 1;  // one monospace column
+
+    // padding scale (in cells)
+    pub const PAD_XS: u16 = 1;
+    pub const PAD_SM: u16 = 2;
+    pub const PAD_MD: u16 = 3;
+    pub const PAD_LG: u16 = 4;
+
+    // box-drawing glyphs — the canonical 17
+    pub const GLYPH_CURSOR:    &str = "\u{258C}";  // ▌
+    pub const GLYPH_H_LINE:    &str = "\u{2500}";  // ─
+    pub const GLYPH_V_LINE:    &str = "\u{2502}";  // │
+    pub const GLYPH_CORNER_TL: &str = "\u{250C}";  // ┌
+    pub const GLYPH_CORNER_TR: &str = "\u{2510}";  // ┐
+    pub const GLYPH_CORNER_BL: &str = "\u{2514}";  // └
+    pub const GLYPH_CORNER_BR: &str = "\u{2518}";  // ┘
+    pub const GLYPH_T_LEFT:    &str = "\u{251C}";  // ├
+    pub const GLYPH_T_RIGHT:   &str = "\u{2524}";  // ┤
+    pub const GLYPH_T_DOWN:    &str = "\u{252C}";  // ┬
+    pub const GLYPH_T_UP:      &str = "\u{2534}";  // ┴
+    pub const GLYPH_CROSS:     &str = "\u{253C}";  // ┼
+    pub const GLYPH_DOT_FULL:  &str = "\u{25CF}";  // ●
+    pub const GLYPH_DOT_EMPTY: &str = "\u{25CB}";  // ○
+    pub const GLYPH_DIAMOND:   &str = "\u{25C6}";  // ◆
+    pub const GLYPH_DIAMOND_IN_DIAMOND: &str = "\u{25C8}";  // ◈
+    pub const GLYPH_CHECK:     &str = "\u{2713}";  // ✓
+    pub const GLYPH_CROSS_X:   &str = "\u{2717}";  // ✗
+    pub const GLYPH_ELLIPSIS:  &str = "\u{2026}";  // …
+
+# web bindings — tailwind v4 @theme and css custom properties for the landing page
+# and README html rendering. derived from the same canonical anchors as rust_bindings.
+web_bindings:
+  css_custom_properties: |
+    :root {
+      /* neutrals */
+      --mz-bg:        #0a0a0a;
+      --mz-fg:        #ededed;
+      --mz-fg-muted:  #8a8a8a;
+      --mz-border:    #2a2a2a;
+
+      /* the one accent */
+      --mz-signal:    #5fb878;
+
+      /* semantic amber */
+      --mz-warn:      #d4a017;
+      --mz-error:     #b8860b;
+
+      /* typography */
+      --font-mono: "Berkeley Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+      /* type scale — major third, 1.25, 16px base */
+      --mz-text-xxs:   0.80rem;    /* 12.80px — metadata */
+      --mz-text-xs:    0.8125rem;  /* 13.00px — small */
+      --mz-text-sm:    0.90rem;    /* 14.40px — body compact */
+      --mz-text-base:  1.00rem;    /* 16.00px — body */
+      --mz-text-lg:    1.125rem;   /* 18.00px — body lead */
+      --mz-text-xl:    clamp(1.125rem, 0.96rem + 0.83vw, 1.25rem);      /* 18 → 20 — h3 */
+      --mz-text-2xl:   clamp(1.25rem, 1.04rem + 1.04vw, 1.5625rem);     /* 20 → 25 — h2 */
+      --mz-text-3xl:   clamp(1.5625rem, 1.25rem + 1.56vw, 1.9531rem);   /* 25 → 31.25 — h1 */
+      --mz-text-4xl:   clamp(1.9531rem, 1.56rem + 1.95vw, 2.4413rem);   /* 31.25 → 39.06 — display */
+      --mz-text-5xl:   clamp(2.4413rem, 1.95rem + 2.44vw, 3.0518rem);   /* 39.06 → 48.83 — display large */
+
+      /* weights */
+      --mz-weight-regular:  400;
+      --mz-weight-semibold: 600;
+      --mz-weight-bold:     700;
+
+      /* line-heights */
+      --mz-leading-display: 1.1;
+      --mz-leading-tight:   1.2;
+      --mz-leading-snug:    1.3;
+      --mz-leading-normal:  1.4;
+      --mz-leading-body:    1.6;
+
+      /* shape */
+      --mz-radius: 0;
+      --mz-border-w: 1px;
+    }
+
+    @media (prefers-color-scheme: light) {
+      :root {
+        --mz-bg:        #fafafa;
+        --mz-fg:        #0a0a0a;
+        --mz-fg-muted:  #6a6a6a;
+        --mz-border:    #e0e0e0;
+        --mz-signal:    #2e8b57;
+        --mz-warn:      #b8860b;
+        --mz-error:     #8b6508;
+      }
+    }
+
+  tailwind_v4_theme: |
+    @theme {
+      /* families — the one face, no secondary sans */
+      --font-mono: "Berkeley Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --font-sans: var(--font-mono);
+
+      /* colors */
+      --color-mz-bg:        #0a0a0a;
+      --color-mz-fg:        #ededed;
+      --color-mz-fg-muted:  #8a8a8a;
+      --color-mz-border:    #2a2a2a;
+      --color-mz-signal:    #5fb878;
+      --color-mz-warn:      #d4a017;
+      --color-mz-error:     #b8860b;
+
+      /* type scale */
+      --text-xxs:  0.80rem;
+      --text-xs:   0.8125rem;
+      --text-sm:   0.90rem;
+      --text-base: 1.00rem;
+      --text-lg:   1.125rem;
+      --text-xl:   clamp(1.125rem, 0.96rem + 0.83vw, 1.25rem);
+      --text-2xl:  clamp(1.25rem, 1.04rem + 1.04vw, 1.5625rem);
+      --text-3xl:  clamp(1.5625rem, 1.25rem + 1.56vw, 1.9531rem);
+      --text-4xl:  clamp(1.9531rem, 1.56rem + 1.95vw, 2.4413rem);
+      --text-5xl:  clamp(2.4413rem, 1.95rem + 2.44vw, 3.0518rem);
+
+      /* weights */
+      --font-weight-normal:   400;
+      --font-weight-semibold: 600;
+      --font-weight-bold:     700;
+
+      /* line-heights */
+      --leading-tight:   1.1;
+      --leading-snug:    1.2;
+      --leading-normal:  1.4;
+      --leading-relaxed: 1.55;
+      --leading-loose:   1.6;
+
+      /* shape — zero radius everywhere */
+      --radius-sm: 0;
+      --radius-md: 0;
+      --radius-lg: 0;
+
+      /* elevation — no shadows */
+      --shadow-sm: none;
+      --shadow-md: none;
+      --shadow-lg: none;
+      --shadow-xl: none;
+    }
+
+  keyframes: |
+    @keyframes mz-cursor-blink {
+      0%, 49.99% { opacity: 1; }
+      50%, 100%  { opacity: 0; }
+    }
+    .mz-cursor {
+      display: inline-block;
+      color: var(--mz-signal);
+      animation: mz-cursor-blink 1.06s step-end infinite;
+    }
+
+# compatibility — styles this brand plays well with
+compatibility: [monochrome, bento-grid]
+
+# clashes — styles this brand is fundamentally incompatible with
+clashes: [glassmorphism, liquid-glass, claymorphism, vaporwave, gradient-driven]

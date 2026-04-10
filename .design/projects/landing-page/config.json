@@ -1,0 +1,16 @@
+{
+  "version": "0.7.3",
+  "project_type": "design",
+  "project": {
+    "name": "landing-page",
+    "display_name": "metaphaze landing page",
+    "created": "2026-04-10"
+  },
+  "brand_ref": "../../branding/metaphaze",
+  "implementation_target": "code",
+  "design_scope": "full",
+  "codebase_type": "greenfield",
+  "platforms": ["web"],
+  "tech_stack": "next.js 14 + tailwind v4 + shadcn/ui",
+  "gsp_version": "0.7.2"
+}

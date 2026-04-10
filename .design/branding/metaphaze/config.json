@@ -1,0 +1,22 @@
+{
+  "version": "0.7.3",
+  "project_type": "brand",
+  "brand": {
+    "name": "metaphaze",
+    "created": "2026-04-10"
+  },
+  "brand_mode": "new",
+  "e2e": false,
+  "evolution_scope": {
+    "preserve": [],
+    "evolve": [],
+    "replace": []
+  },
+  "system_config": {
+    "tech_stack": "rust + ratatui + crossterm",
+    "system_strategy": "generate",
+    "style_preset": "",
+    "style_base": ["terminal"]
+  },
+  "gsp_version": "0.7.2"
+}

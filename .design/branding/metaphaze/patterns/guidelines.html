@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>metaphaze — brand guidelines</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  /* ------------------------------------------------------------
+     metaphaze brand guidelines — self-contained, zero deps.
+     the page IS a metaphaze brand asset. it renders itself
+     using the brand's own tokens. dark mode is the default.
+     light mode is a literal inversion.
+     ------------------------------------------------------------ */
+
+  :root {
+    /* neutrals */
+    --mz-bg:        #0a0a0a;
+    --mz-fg:        #ededed;
+    --mz-fg-muted:  #8a8a8a;
+    --mz-border:    #2a2a2a;
+
+    /* the one accent */
+    --mz-signal:    #5fb878;
+
+    /* semantic amber */
+    --mz-warn:      #d4a017;
+    --mz-error:     #b8860b;
+
+    /* typography */
+    --font-mono: "Berkeley Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    /* type scale — major third, 1.25, 16px base */
+    --mz-text-xxs:   0.80rem;
+    --mz-text-xs:    0.8125rem;
+    --mz-text-sm:    0.90rem;
+    --mz-text-base:  1.00rem;
+    --mz-text-lg:    1.125rem;
+    --mz-text-xl:    1.25rem;
+    --mz-text-2xl:   1.5625rem;
+    --mz-text-3xl:   1.9531rem;
+    --mz-text-4xl:   2.4413rem;
+    --mz-text-5xl:   3.0518rem;
+
+    /* weights */
+    --mz-weight-regular:  400;
+    --mz-weight-semibold: 600;
+    --mz-weight-bold:     700;
+
+    /* line-heights */
+    --mz-leading-display: 1.1;
+    --mz-leading-tight:   1.2;
+    --mz-leading-body:    1.6;
+
+    /* shape */
+    --mz-radius:   0;
+    --mz-border-w: 1px;
+
+    /* layout */
+    --mz-column: 720px;
+  }
+
+  @media (prefers-color-scheme: light) {
+    :root {
+      --mz-bg:        #fafafa;
+      --mz-fg:        #0a0a0a;
+      --mz-fg-muted:  #6a6a6a;
+      --mz-border:    #e0e0e0;
+      --mz-signal:    #2e8b57;
+      --mz-warn:      #b8860b;
+      --mz-error:     #8b6508;
+    }
+  }
+
+  /* reset */
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body, h1, h2, h3, h4, p, ul, ol, li, pre, figure, blockquote {
+    margin: 0;
+    padding: 0;
+  }
+  ul { list-style: none; }
+
+  html {
+    background: var(--mz-bg);
+    color: var(--mz-fg);
+    font-family: var(--font-mono);
+    font-size: 16px;
+    line-height: var(--mz-leading-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: geometricPrecision;
+  }
+
+  body {
+    min-height: 100vh;
+    padding: 0;
+  }
+
+  main {
+    max-width: var(--mz-column);
+    margin: 0 auto;
+    padding: 4rem 1.5rem 6rem;
+  }
+
+  /* --- typography ------------------------------------------- */
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-mono);
+    font-weight: var(--mz-weight-semibold);
+    line-height: var(--mz-leading-tight);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  h1 {
+    font-size: var(--mz-text-4xl);
+    font-weight: var(--mz-weight-bold);
+    line-height: var(--mz-leading-display);
+    margin-bottom: 1rem;
+  }
+  h2 {
+    font-size: var(--mz-text-2xl);
+    margin-top: 4rem;
+    margin-bottom: 1.5rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--mz-border);
+  }
+  h3 {
+    font-size: var(--mz-text-xl);
+    margin-top: 2.5rem;
+    margin-bottom: 1rem;
+  }
+  p {
+    font-size: var(--mz-text-base);
+    line-height: var(--mz-leading-body);
+    margin-bottom: 1rem;
+    max-width: 62ch;
+  }
+  p.lead {
+    font-size: var(--mz-text-lg);
+    color: var(--mz-fg-muted);
+  }
+  small, .muted {
+    color: var(--mz-fg-muted);
+    font-size: var(--mz-text-sm);
+  }
+
+  a {
+    color: var(--mz-fg);
+    text-decoration: none;
+    position: relative;
+  }
+  a:hover { text-decoration: underline; }
+
+  code, pre {
+    font-family: var(--font-mono);
+    font-size: var(--mz-text-sm);
+  }
+
+  hr {
+    border: none;
+    border-top: 1px solid var(--mz-border);
+    margin: 3rem 0;
+  }
+
+  /* --- hero ------------------------------------------------- */
+
+  .hero {
+    padding: 3rem 0 2rem;
+    border-bottom: 1px solid var(--mz-border);
+    margin-bottom: 0;
+  }
+  .logo {
+    font-size: var(--mz-text-5xl);
+    font-weight: var(--mz-weight-bold);
+    line-height: 1;
+    margin-bottom: 2rem;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0;
+  }
+  .logo .letters { color: var(--mz-fg); }
+  .logo .cursor {
+    display: inline-block;
+    color: var(--mz-signal);
+    animation: mz-cursor-blink 1.06s step-end infinite;
+  }
+  @keyframes mz-cursor-blink {
+    0%, 49.99% { opacity: 1; }
+    50%, 100%  { opacity: 0; }
+  }
+  .manifesto {
+    font-size: var(--mz-text-xl);
+    font-weight: var(--mz-weight-semibold);
+    line-height: var(--mz-leading-tight);
+    margin-bottom: 1.5rem;
+    max-width: 36ch;
+  }
+  .manifesto .mz { color: var(--mz-signal); }
+  .hero .kicker {
+    color: var(--mz-fg-muted);
+    font-size: var(--mz-text-sm);
+    margin-bottom: 0;
+  }
+
+  /* --- color swatches -------------------------------------- */
+
+  .swatch-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-top: 1.5rem;
+  }
+  .swatch-col h4 {
+    font-size: var(--mz-text-sm);
+    color: var(--mz-fg-muted);
+    font-weight: var(--mz-weight-regular);
+    text-transform: none;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid var(--mz-border);
+  }
+  .swatch {
+    display: grid;
+    grid-template-columns: 40px 1fr;
+    gap: 0.75rem;
+    align-items: center;
+    padding: 0.5rem 0;
+    font-size: var(--mz-text-sm);
+    border-bottom: 1px solid var(--mz-border);
+  }
+  .swatch:last-child { border-bottom: none; }
+  .swatch .chip {
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--mz-border);
+  }
+  .swatch .meta { display: flex; flex-direction: column; gap: 0.1rem; }
+  .swatch .hex { color: var(--mz-fg); font-weight: var(--mz-weight-semibold); }
+  .swatch .name { color: var(--mz-fg-muted); font-size: var(--mz-text-xs); }
+
+  /* fixed-palette swatches — always show the dark-mode hex
+     regardless of prefers-color-scheme so the reference is stable */
+  .swatch-dark       .chip { background: #0a0a0a; border-color: #2a2a2a; }
+  .swatch-dark-fg    .chip { background: #ededed; border-color: #2a2a2a; }
+  .swatch-dark-dust  .chip { background: #8a8a8a; border-color: #2a2a2a; }
+  .swatch-dark-slate .chip { background: #2a2a2a; border-color: #2a2a2a; }
+  .swatch-dark-sig   .chip { background: #5fb878; border-color: #2a2a2a; }
+  .swatch-dark-warn  .chip { background: #d4a017; border-color: #2a2a2a; }
+  .swatch-dark-err   .chip { background: #b8860b; border-color: #2a2a2a; }
+
+  .swatch-light-bg    .chip { background: #fafafa; border-color: #e0e0e0; }
+  .swatch-light-fg    .chip { background: #0a0a0a; border-color: #e0e0e0; }
+  .swatch-light-dust  .chip { background: #6a6a6a; border-color: #e0e0e0; }
+  .swatch-light-slate .chip { background: #e0e0e0; border-color: #c0c0c0; }
+  .swatch-light-sig   .chip { background: #2e8b57; border-color: #e0e0e0; }
+  .swatch-light-warn  .chip { background: #b8860b; border-color: #e0e0e0; }
+  .swatch-light-err   .chip { background: #8b6508; border-color: #e0e0e0; }
+
+  /* --- type scale ------------------------------------------ */
+
+  .type-row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 1rem;
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--mz-border);
+    align-items: baseline;
+  }
+  .type-row:last-child { border-bottom: none; }
+  .type-row .meta {
+    color: var(--mz-fg-muted);
+    font-size: var(--mz-text-xs);
+    line-height: 1.3;
+  }
+  .type-row .sample {
+    color: var(--mz-fg);
+    font-weight: var(--mz-weight-regular);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .type-xxs  .sample { font-size: 12.80px; line-height: 1.5; }
+  .type-xs   .sample { font-size: 13.00px; line-height: 1.5; }
+  .type-sm   .sample { font-size: 14.40px; line-height: 1.55; }
+  .type-base .sample { font-size: 16.00px; line-height: 1.6; }
+  .type-lg   .sample { font-size: 18.00px; line-height: 1.55; }
+  .type-xl   .sample { font-size: 20.00px; line-height: 1.4; font-weight: 600; }
+  .type-2xl  .sample { font-size: 25.00px; line-height: 1.3; font-weight: 600; }
+  .type-3xl  .sample { font-size: 31.25px; line-height: 1.2; font-weight: 600; }
+  .type-4xl  .sample { font-size: 39.06px; line-height: 1.15; font-weight: 700; }
+  .type-5xl  .sample { font-size: 48.83px; line-height: 1.1; font-weight: 700; }
+
+  /* --- patterns section ------------------------------------ */
+
+  .pattern {
+    margin-bottom: 2rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px solid var(--mz-border);
+  }
+  .pattern:last-child { border-bottom: none; }
+  .pattern h3 { margin-top: 0; }
+  .pattern .label {
+    color: var(--mz-fg-muted);
+    font-size: var(--mz-text-xs);
+    margin-bottom: 0.5rem;
+  }
+  .preview {
+    padding: 1.25rem;
+    border: 1px solid var(--mz-border);
+    background: var(--mz-bg);
+    margin-top: 0.5rem;
+  }
+
+  /* card preview */
+  .mz-card {
+    border: 1px solid var(--mz-border);
+    background: var(--mz-bg);
+    border-radius: 0;
+    box-shadow: none;
+    padding: 1.25rem 1.5rem;
+  }
+  .mz-card .card-header {
+    color: var(--mz-fg);
+    font-size: var(--mz-text-sm);
+    margin-bottom: 0.75rem;
+    letter-spacing: 0;
+  }
+  .mz-card p { margin-bottom: 0; font-size: var(--mz-text-sm); }
+
+  /* button preview */
+  .mz-btn {
+    background: transparent;
+    border: none;
+    color: var(--mz-fg);
+    font-family: var(--font-mono);
+    font-size: var(--mz-text-base);
+    padding: 0.25rem 0;
+    cursor: pointer;
+    transition: none;
+    display: inline-block;
+  }
+  .mz-btn::before { content: "[ "; color: var(--mz-fg-muted); }
+  .mz-btn::after  { content: " ]"; color: var(--mz-fg-muted); }
+  .mz-btn:hover {
+    background: var(--mz-fg);
+    color: var(--mz-bg);
+  }
+  .mz-btn:hover::before,
+  .mz-btn:hover::after { color: var(--mz-bg); }
+  .mz-btn + .mz-btn { margin-left: 1rem; }
+
+  /* input preview */
+  .mz-input-wrap {
+    display: inline-flex;
+    align-items: center;
+    font-family: var(--font-mono);
+    font-size: var(--mz-text-base);
+  }
+  .mz-input-wrap::before {
+    content: "$ ";
+    color: var(--mz-fg-muted);
+  }
+  .mz-input-wrap input {
+    border: none;
+    background: transparent;
+    font-family: var(--font-mono);
+    font-size: var(--mz-text-base);
+    color: var(--mz-fg);
+    outline: none;
+    caret-color: var(--mz-signal);
+    min-width: 280px;
+    padding: 0;
+  }
+  .mz-input-wrap .fake-cursor {
+    display: inline-block;
+    width: 0.5em;
+    color: var(--mz-signal);
+    animation: mz-cursor-blink 1.06s step-end infinite;
+  }
+
+  /* badge preview */
+  .mz-badge {
+    font-family: var(--font-mono);
+    font-size: var(--mz-text-sm);
+    font-weight: var(--mz-weight-regular);
+    display: inline-block;
+    margin-right: 0.75rem;
+  }
+  .mz-badge-ok   { color: var(--mz-signal); }
+  .mz-badge-warn { color: var(--mz-warn); }
+  .mz-badge-err  { color: var(--mz-error); }
+
+  /* nav preview */
+  .mz-nav {
+    display: flex;
+    gap: 1.25rem;
+    font-family: var(--font-mono);
+    font-size: var(--mz-text-base);
+  }
+  .mz-nav a {
+    color: var(--mz-fg);
+    text-decoration: none;
+    position: relative;
+  }
+  .mz-nav a .prefix {
+    position: absolute;
+    left: -1ch;
+    opacity: 0;
+    color: var(--mz-fg);
+  }
+  .mz-nav a:hover { text-decoration: underline; }
+  .mz-nav a:hover .prefix { opacity: 1; }
+
+  /* code block preview */
+  .mz-code {
+    background: var(--mz-border);
+    color: var(--mz-fg);
+    border: 1px solid var(--mz-border);
+    border-radius: 0;
+    box-shadow: none;
+    padding: 1rem 1.25rem;
+    font-family: var(--font-mono);
+    font-size: var(--mz-text-sm);
+    line-height: 1.6;
+    white-space: pre;
+    overflow-x: auto;
+    margin: 0;
+  }
+  .mz-code .mz-prompt { color: var(--mz-fg-muted); }
+  .mz-code .mz-accent { color: var(--mz-signal); }
+  .mz-code .mz-output { color: var(--mz-fg); }
+
+  /* --- imagery (ASCII) ------------------------------------ */
+
+  .ascii-screen {
+    background: var(--mz-bg);
+    color: var(--mz-fg);
+    border: 1px solid var(--mz-border);
+    padding: 1rem 1.25rem;
+    font-family: var(--font-mono);
+    font-size: var(--mz-text-sm);
+    line-height: 1.4;
+    white-space: pre;
+    overflow-x: auto;
+    margin: 1rem 0;
+  }
+  .ascii-screen .sig { color: var(--mz-signal); }
+  .ascii-screen .dust { color: var(--mz-fg-muted); }
+
+  .glyph-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.5rem;
+    margin-top: 1rem;
+  }
+  .glyph-cell {
+    border: 1px solid var(--mz-border);
+    padding: 0.75rem;
+    display: grid;
+    grid-template-columns: 32px 1fr;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: var(--mz-text-xs);
+  }
+  .glyph-cell .glyph {
+    font-size: 22px;
+    color: var(--mz-fg);
+    text-align: center;
+  }
+  .glyph-cell .name {
+    color: var(--mz-fg-muted);
+    font-size: 11px;
+    line-height: 1.3;
+  }
+
+  /* --- constraints ----------------------------------------- */
+
+  .constraints-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-top: 1rem;
+  }
+  .constraints-col h3 {
+    font-size: var(--mz-text-sm);
+    color: var(--mz-fg);
+    font-weight: var(--mz-weight-semibold);
+    text-transform: none;
+    margin-top: 0;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.25rem;
+    border-bottom: 1px solid var(--mz-border);
+  }
+  .constraints-col ul li {
+    font-size: var(--mz-text-sm);
+    line-height: 1.6;
+    padding: 0.2rem 0;
+  }
+  .constraints-col.never li { color: var(--mz-fg-muted); }
+  .constraints-col.never li::before {
+    content: "- ";
+    color: var(--mz-fg-muted);
+  }
+  .constraints-col.always li { color: var(--mz-fg); }
+  .constraints-col.always li::before {
+    content: "- ";
+    color: var(--mz-fg-muted);
+  }
+
+  /* --- footer ---------------------------------------------- */
+
+  footer {
+    margin-top: 6rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--mz-border);
+    color: var(--mz-fg-muted);
+    font-size: var(--mz-text-sm);
+    text-align: left;
+  }
+  footer .em { color: var(--mz-fg); }
+
+  /* --- responsive ------------------------------------------ */
+
+  @media (max-width: 640px) {
+    main { padding: 2rem 1rem 4rem; }
+    .logo { font-size: 2.25rem; }
+    .manifesto { font-size: var(--mz-text-lg); }
+    .swatch-grid { grid-template-columns: 1fr; gap: 1.5rem; }
+    .constraints-grid { grid-template-columns: 1fr; gap: 1.5rem; }
+    .type-row { grid-template-columns: 90px 1fr; }
+    h2 { font-size: var(--mz-text-xl); }
+  }
+</style>
+</head>
+<body>
+<main>
+
+  <header class="hero">
+    <div class="logo" aria-label="metaphaze logo: m z block cursor">
+      <span class="letters">mz</span><span class="cursor">&#x258C;</span>
+    </div>
+    <p class="manifesto">
+      the orchestrator runs outside the loop.<br>
+      claude builds. <span class="mz">mz</span> drives.
+    </p>
+    <p class="kicker">metaphaze — brand guidelines · generated 2026-04-10</p>
+  </header>
+
+  <section id="colors">
+    <h2>colors</h2>
+    <p class="lead">
+      five anchors. one accent. the signal color appears on less than 1% of pixels on any surface.
+    </p>
+
+    <div class="swatch-grid">
+
+      <div class="swatch-col">
+        <h4>dark mode — default</h4>
+        <div class="swatch swatch-dark">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#0a0a0a</span>
+            <span class="name">mz.black · --mz-bg · page, surface, pane</span>
+          </div>
+        </div>
+        <div class="swatch swatch-dark-fg">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#ededed</span>
+            <span class="name">mz.bone · --mz-fg · body, headlines, code</span>
+          </div>
+        </div>
+        <div class="swatch swatch-dark-dust">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#8a8a8a</span>
+            <span class="name">mz.dust · --mz-fg-muted · metadata, prompts</span>
+          </div>
+        </div>
+        <div class="swatch swatch-dark-slate">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#2a2a2a</span>
+            <span class="name">mz.slate · --mz-border · pane borders, code bg</span>
+          </div>
+        </div>
+        <div class="swatch swatch-dark-sig">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#5fb878</span>
+            <span class="name">mz.signal · --mz-signal · cursor, [OK], success</span>
+          </div>
+        </div>
+        <div class="swatch swatch-dark-warn">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#d4a017</span>
+            <span class="name">mz.amber.warn · --mz-warn · [WARN] badge</span>
+          </div>
+        </div>
+        <div class="swatch swatch-dark-err">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#b8860b</span>
+            <span class="name">mz.amber.error · --mz-error · [ERR] (never red)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="swatch-col">
+        <h4>light mode — literal inversion</h4>
+        <div class="swatch swatch-light-bg">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#fafafa</span>
+            <span class="name">--mz-bg · page, surface, pane</span>
+          </div>
+        </div>
+        <div class="swatch swatch-light-fg">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#0a0a0a</span>
+            <span class="name">--mz-fg · body, headlines, code</span>
+          </div>
+        </div>
+        <div class="swatch swatch-light-dust">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#6a6a6a</span>
+            <span class="name">--mz-fg-muted · metadata, prompts</span>
+          </div>
+        </div>
+        <div class="swatch swatch-light-slate">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#e0e0e0</span>
+            <span class="name">--mz-border · pane borders, code bg</span>
+          </div>
+        </div>
+        <div class="swatch swatch-light-sig">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#2e8b57</span>
+            <span class="name">--mz-signal · large glyphs only on light (AA)</span>
+          </div>
+        </div>
+        <div class="swatch swatch-light-warn">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#b8860b</span>
+            <span class="name">--mz-warn · [WARN] badge</span>
+          </div>
+        </div>
+        <div class="swatch swatch-light-err">
+          <div class="chip"></div>
+          <div class="meta">
+            <span class="hex">#8b6508</span>
+            <span class="name">--mz-error · [ERR] (never red)</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <p class="muted" style="margin-top: 1.5rem;">
+      all primary pairs pass WCAG AA. body text hits 16.97:1 on dark and 18.95:1 on light.
+      the light-mode signal (#2e8b57) is large-glyph only — cursor, status dots, anything at or above 24px.
+    </p>
+  </section>
+
+  <section id="typography">
+    <h2>typography</h2>
+    <p class="lead">
+      one typeface, three weights, eleven steps. berkeley mono preferred. jetbrains mono is the free fallback and the face you are reading right now.
+    </p>
+
+    <div class="type-scale">
+      <div class="type-row type-xxs">
+        <div class="meta">xxs · 12.80px<br>400 · 1.5</div>
+        <div class="sample">mz init · mz plan · mz auto</div>
+      </div>
+      <div class="type-row type-xs">
+        <div class="meta">xs · 13.00px<br>400 · 1.5</div>
+        <div class="sample">mz init · mz plan · mz auto</div>
+      </div>
+      <div class="type-row type-sm">
+        <div class="meta">sm · 14.40px<br>400 · 1.55</div>
+        <div class="sample">the orchestrator runs outside the loop</div>
+      </div>
+      <div class="type-row type-base">
+        <div class="meta">base · 16.00px<br>400 · 1.6</div>
+        <div class="sample">the orchestrator runs outside the loop</div>
+      </div>
+      <div class="type-row type-lg">
+        <div class="meta">lg · 18.00px<br>400 · 1.55</div>
+        <div class="sample">the orchestrator runs outside the loop</div>
+      </div>
+      <div class="type-row type-xl">
+        <div class="meta">xl · 20.00px<br>600 · 1.4</div>
+        <div class="sample">the orchestrator runs outside the loop</div>
+      </div>
+      <div class="type-row type-2xl">
+        <div class="meta">2xl · 25.00px<br>600 · 1.3</div>
+        <div class="sample">the orchestrator runs</div>
+      </div>
+      <div class="type-row type-3xl">
+        <div class="meta">3xl · 31.25px<br>600 · 1.2</div>
+        <div class="sample">the orchestrator</div>
+      </div>
+      <div class="type-row type-4xl">
+        <div class="meta">4xl · 39.06px<br>700 · 1.15</div>
+        <div class="sample">mz drives</div>
+      </div>
+      <div class="type-row type-5xl">
+        <div class="meta">5xl · 48.83px<br>700 · 1.1</div>
+        <div class="sample">mz drives</div>
+      </div>
+    </div>
+
+    <p class="muted" style="margin-top: 1.5rem;">
+      hierarchy is established by weight and whitespace, not by size. no italics. lowercase everywhere except <code>[BADGE]</code> codes. line-height 1.6 body, 1.1 display.
+    </p>
+  </section>
+
+  <section id="patterns">
+    <h2>patterns</h2>
+    <p class="lead">
+      seven component patterns. live previews — hover the buttons and links to see the interaction vocabulary.
+    </p>
+
+    <div class="pattern">
+      <h3>card</h3>
+      <p class="label">1px border, zero radius, no shadow, flat background. box-drawing title bar.</p>
+      <div class="preview">
+        <div class="mz-card">
+          <div class="card-header">&#x250C;&#x2500; phase transition &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;</div>
+          <p>state lives in .mz/. kill the process, restart, the plan resumes. single binary. mit. no accounts.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="pattern">
+      <h3>button primary / secondary</h3>
+      <p class="label">transparent background, bracketed lowercase label, video-invert on hover.</p>
+      <div class="preview">
+        <button class="mz-btn" type="button">initiate</button>
+        <button class="mz-btn" type="button">cancel</button>
+      </div>
+    </div>
+
+    <div class="pattern">
+      <h3>input</h3>
+      <p class="label">prompt-style, no box, $ prefix in dust, blinking block cursor on focus.</p>
+      <div class="preview">
+        <label class="mz-input-wrap">
+          <input type="text" placeholder="mz init my-project" aria-label="command input">
+          <span class="fake-cursor" aria-hidden="true">&#x258C;</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="pattern">
+      <h3>badge</h3>
+      <p class="label">bracketed uppercase status codes. the only place caps are allowed.</p>
+      <div class="preview">
+        <span class="mz-badge mz-badge-ok">[OK]</span>
+        <span class="mz-badge mz-badge-warn">[WARN]</span>
+        <span class="mz-badge mz-badge-err">[ERR]</span>
+      </div>
+    </div>
+
+    <div class="pattern">
+      <h3>navigation</h3>
+      <p class="label">bracketed links, > prefix slides in on hover, underline appears, color does not change.</p>
+      <div class="preview">
+        <nav class="mz-nav">
+          <a href="#"><span class="prefix">&gt;</span>[/about]</a>
+          <a href="#"><span class="prefix">&gt;</span>[/docs]</a>
+          <a href="#"><span class="prefix">&gt;</span>[/source]</a>
+        </nav>
+      </div>
+    </div>
+
+    <div class="pattern">
+      <h3>code block</h3>
+      <p class="label">slate background, dust prompt, one signal accent per block.</p>
+      <div class="preview">
+<pre class="mz-code"><span class="mz-prompt">$</span> cargo install <span class="mz-accent">mz</span>
+<span class="mz-output">    Updating crates.io index
+  Installing mz v0.1.0
+   Compiling mz v0.1.0
+    Finished `release` profile [optimized] target(s) in 48.12s
+  Installing ~/.cargo/bin/mz</span>
+<span class="mz-prompt">$</span> mz --version
+<span class="mz-output">mz 0.1.0
+the orchestrator runs outside the loop.</span></pre>
+      </div>
+    </div>
+
+  </section>
+
+  <section id="imagery">
+    <h2>imagery</h2>
+    <p class="lead">
+      no photos. no illustrations. no icons. the hero asset is a TUI recording. the illustration system is box-drawing characters.
+    </p>
+
+    <h3>phase transition (ASCII)</h3>
+    <p class="muted">static rendering of the signature visual moment — what the TUI prints between phases.</p>
+<pre class="ascii-screen">&#x250C;&#x2500; phase 3/12 &#x2500;&#x2500; scaffolding complete &#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2510;
+&#x2502;                                                          &#x2502;
+&#x2502;  <span class="sig">&#x25C8;</span> track 1/4   cargo project        <span class="sig">&#x2713;</span>               &#x2502;
+&#x2502;  <span class="sig">&#x25C8;</span> track 2/4   ratatui skeleton      <span class="sig">&#x2713;</span>               &#x2502;
+&#x2502;  <span class="sig">&#x25C8;</span> track 3/4   state machine         <span class="sig">&#x2713;</span>               &#x2502;
+&#x2502;  <span class="sig">&#x25C8;</span> track 4/4   disk persistence      <span class="sig">&#x2713;</span>               &#x2502;
+&#x2502;                                                          &#x2502;
+&#x2502;  <span class="dust">produced</span>                                                &#x2502;
+&#x2502;  <span class="dust">&#x251C;&#x2500;</span> .mz/plan.toml                                       &#x2502;
+&#x2502;  <span class="dust">&#x251C;&#x2500;</span> .mz/phase-3/track-1/cargo.toml                      &#x2502;
+&#x2502;  <span class="dust">&#x251C;&#x2500;</span> .mz/phase-3/track-2/src/app.rs                      &#x2502;
+&#x2502;  <span class="dust">&#x2514;&#x2500;</span> .mz/phase-3/track-4/state.toml                      &#x2502;
+&#x2502;                                                          &#x2502;
+&#x2502;  <span class="sig">[OK]</span> <span class="dust">17/97 steps &#x00B7; 04:12 elapsed &#x00B7; next: phase 4</span>     &#x2502;
+&#x2502;                                                          &#x2502;
+&#x2514;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2500;&#x2518;</pre>
+
+    <h3>unicode glyph inventory</h3>
+    <p class="muted">the canonical 17. every glyph is typeable, font-agnostic, and renders in any terminal. no icon library anywhere.</p>
+    <div class="glyph-grid">
+      <div class="glyph-cell"><div class="glyph">&#x258C;</div><div class="name">U+258C<br>left half block · cursor</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x2500;</div><div class="name">U+2500<br>horizontal line</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x2502;</div><div class="name">U+2502<br>vertical line</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x250C;</div><div class="name">U+250C<br>corner top-left</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x2510;</div><div class="name">U+2510<br>corner top-right</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x2514;</div><div class="name">U+2514<br>corner bottom-left</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x2518;</div><div class="name">U+2518<br>corner bottom-right</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x251C;</div><div class="name">U+251C<br>t-junction left</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x2524;</div><div class="name">U+2524<br>t-junction right</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x252C;</div><div class="name">U+252C<br>t-junction down</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x2534;</div><div class="name">U+2534<br>t-junction up</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x253C;</div><div class="name">U+253C<br>cross junction</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x25CF;</div><div class="name">U+25CF<br>active dot</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x25CB;</div><div class="name">U+25CB<br>idle dot</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x25C6;</div><div class="name">U+25C6<br>phase marker</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x25C8;</div><div class="name">U+25C8<br>active phase marker</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x2713;</div><div class="name">U+2713<br>check</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x2717;</div><div class="name">U+2717<br>cross</div></div>
+      <div class="glyph-cell"><div class="glyph">&#x2026;</div><div class="name">U+2026<br>ellipsis</div></div>
+    </div>
+  </section>
+
+  <section id="constraints">
+    <h2>constraints</h2>
+    <p class="lead">
+      the brand is the absences as much as the presences. never on the left, always on the right.
+    </p>
+
+    <div class="constraints-grid">
+      <div class="constraints-col never">
+        <h3>never</h3>
+        <ul>
+          <li>non-monospace fonts</li>
+          <li>border-radius &gt; 0 anywhere</li>
+          <li>drop shadows or colored shadows</li>
+          <li>background images or photography</li>
+          <li>gradients of any kind</li>
+          <li>pure #000000 or pure #ffffff</li>
+          <li>neon terminal green (#00ff00, #33ff00)</li>
+          <li>dev-tool blue (#3b82f6 and cousins)</li>
+          <li>red for errors (amber only)</li>
+          <li>CRT scanline overlay</li>
+          <li>phosphor text glow</li>
+          <li>typewriter reveal animations</li>
+          <li>ALL CAPS headlines</li>
+          <li>italics</li>
+          <li>smart quotes</li>
+          <li>emoji</li>
+          <li>icon libraries</li>
+          <li>mascots, illustrations, 3D renders</li>
+          <li>backdrop-filter, mix-blend-mode, filter</li>
+          <li>agentic, empower, transform, unlock, leverage</li>
+        </ul>
+      </div>
+      <div class="constraints-col always">
+        <h3>always</h3>
+        <ul>
+          <li>monospace font on every element</li>
+          <li>lowercase headlines, nav, body, labels</li>
+          <li>bracketed navigation [/about]</li>
+          <li>bracketed buttons [ initiate ]</li>
+          <li>bracketed status codes [OK] [ERR]</li>
+          <li>shell prompt prefixes $ &gt; ~</li>
+          <li>em-dash as structural divider ( — )</li>
+          <li>box-drawing for diagrams (─ │ ┌ ┐ └ ┘)</li>
+          <li>real TUI recordings as hero asset</li>
+          <li>the manifesto preserved verbatim</li>
+          <li>signal color on &lt; 1% of pixels</li>
+          <li>NO_COLOR respected — brand still works</li>
+          <li>straight quotes only</li>
+          <li>zero-radius everywhere</li>
+          <li>1px solid borders for panes</li>
+          <li>flat surfaces — no overlays</li>
+          <li>step-end easing on the cursor blink</li>
+          <li>one typeface, everywhere</li>
+          <li>weights 400 / 600 / 700 only</li>
+          <li>the readme is the marketing</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <p>
+      <span class="em">metaphaze</span> &#x00B7; brand guidelines &#x00B7; generated 2026-04-10 &#x00B7;
+      mit license &#x00B7; the readme is the marketing &#x00B7; fully pretty.
+    </p>
+  </footer>
+
+</main>
+</body>
+</html>
