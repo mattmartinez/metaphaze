@@ -2,12 +2,14 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use colored::Colorize;
 use dialoguer::Input;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
-const MZ_DIR: &str = ".mz";
+static MZ_ROOT_CACHE: OnceLock<PathBuf> = OnceLock::new();
 
 #[cfg(test)]
 thread_local! {
@@ -212,7 +214,7 @@ impl ProjectState {
     }
 }
 
-fn mz_dir() -> PathBuf {
+pub fn mz_root() -> PathBuf {
     #[cfg(test)]
     {
         let override_path = TEST_MZ_DIR.with(|d| d.borrow().clone());
@@ -220,7 +222,17 @@ fn mz_dir() -> PathBuf {
             return path;
         }
     }
-    PathBuf::from(MZ_DIR)
+    MZ_ROOT_CACHE
+        .get_or_init(|| {
+            std::env::current_dir()
+                .expect("Failed to get current directory")
+                .join(".mz")
+        })
+        .clone()
+}
+
+fn mz_dir() -> PathBuf {
+    mz_root()
 }
 
 fn state_path() -> PathBuf {
@@ -233,11 +245,6 @@ fn project_md_path() -> PathBuf {
 
 fn decisions_path() -> PathBuf {
     mz_dir().join("DECISIONS.md")
-}
-
-#[allow(dead_code)]
-pub fn mz_root() -> PathBuf {
-    mz_dir()
 }
 
 pub fn phases_dir() -> PathBuf {
@@ -447,18 +454,34 @@ pub fn load() -> Result<ProjectState> {
     if !path.exists() {
         bail!("No .mz/ project found. Run `mz init` first.");
     }
+    let lock_path = mz_root().join("state.yaml.lock");
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .context("Failed to open state lock file")?;
+    lock_file.lock_shared().context("Failed to acquire shared lock on state.yaml")?;
     let contents = fs::read_to_string(&path).context("Failed to read state.yaml")?;
     let state: ProjectState = serde_yaml::from_str(&contents).context("Failed to parse state.yaml")?;
+    drop(lock_file);
     Ok(state)
 }
 
 pub fn save(state: &ProjectState) -> Result<()> {
     let yaml = serde_yaml::to_string(state).context("Failed to serialize state")?;
-    // Atomic write: write to temp file then rename (BUG-2 partial fix)
     let path = state_path();
+    let lock_path = mz_root().join("state.yaml.lock");
+    let lock_file = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .context("Failed to open state lock file")?;
+    lock_file.lock_exclusive().context("Failed to acquire exclusive lock on state.yaml")?;
+    // Atomic write: write to temp file then rename
     let tmp = path.with_extension("yaml.tmp");
     fs::write(&tmp, &yaml).context("Failed to write state.yaml.tmp")?;
     fs::rename(&tmp, &path).context("Failed to rename state.yaml.tmp")?;
+    drop(lock_file);
     Ok(())
 }
 
@@ -1246,6 +1269,56 @@ mod tests {
         remove_skeleton_phase("P999").unwrap();
         let s = load().unwrap();
         assert_eq!(s.phases.len(), 1); // only P001 remains
+    }
+
+    #[test]
+    fn test_concurrent_save_load_no_corruption() {
+        use std::sync::Arc;
+
+        // Set up a shared temp dir that both threads will use.
+        let dir = tempfile::tempdir().unwrap();
+        let mz_path = dir.path().join(".mz");
+        fs::create_dir_all(&mz_path).unwrap();
+
+        // Write initial state into the shared dir.
+        let mz_path = Arc::new(mz_path);
+        {
+            let initial = make_state();
+            let yaml = serde_yaml::to_string(&initial).unwrap();
+            fs::write(mz_path.join("state.yaml"), &yaml).unwrap();
+        }
+
+        let mz_path_a = Arc::clone(&mz_path);
+        let mz_path_b = Arc::clone(&mz_path);
+
+        let thread_a = std::thread::spawn(move || {
+            // Each thread sets its own TEST_MZ_DIR to the shared directory.
+            TEST_MZ_DIR.with(|d| *d.borrow_mut() = Some((*mz_path_a).clone()));
+            for i in 0..50_u32 {
+                let mut state = load().unwrap();
+                state.phases[0].tracks[0].steps[0].attempts = i;
+                save(&state).unwrap();
+            }
+            TEST_MZ_DIR.with(|d| *d.borrow_mut() = None);
+        });
+
+        let thread_b = std::thread::spawn(move || {
+            TEST_MZ_DIR.with(|d| *d.borrow_mut() = Some((*mz_path_b).clone()));
+            for i in 0..50_u32 {
+                let mut state = load().unwrap();
+                state.phases[0].tracks[0].steps[1].attempts = i;
+                save(&state).unwrap();
+            }
+            TEST_MZ_DIR.with(|d| *d.borrow_mut() = None);
+        });
+
+        thread_a.join().expect("thread A panicked");
+        thread_b.join().expect("thread B panicked");
+
+        // Verify the final YAML is parseable (no corruption).
+        let final_yaml = fs::read_to_string(mz_path.join("state.yaml")).unwrap();
+        let _state: ProjectState = serde_yaml::from_str(&final_yaml)
+            .expect("state.yaml is not valid YAML after concurrent writes");
     }
 }
 
