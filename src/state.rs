@@ -1314,22 +1314,83 @@ pub fn print_status(state: &ProjectState, detail: bool) -> Result<()> {
             };
             println!("  {} {} — {} ({}/{})", marker, track.id, track.title, track_done, track_total);
 
-            if detail {
-                for step in &track.steps {
+            for step in &track.steps {
+                    // Always show blocked steps; other steps only in detail mode
+                    if step.status != StepStatus::Blocked && !detail {
+                        continue;
+                    }
+
                     let icon = match step.status {
                         StepStatus::Complete => "  ✓".green().to_string(),
                         StepStatus::InProgress => "  ▶".yellow().to_string(),
                         StepStatus::Blocked => "  ✗".red().to_string(),
                         StepStatus::Pending => "  ○".normal().to_string(),
                     };
-                    let suffix = match &step.blocked_reason {
-                        Some(r) => format!(" ({})", r).red().to_string(),
-                        None => String::new(),
+
+                    let key = (ph.id.clone(), track.id.clone(), step.id.clone());
+
+                    // Build suffix: blocked steps get [BLOCKED: ...], others nothing
+                    let suffix = if step.status == StepStatus::Blocked {
+                        match &step.blocked_reason {
+                            Some(r) => {
+                                if detail {
+                                    // In detail mode: show full reason + live cost from records
+                                    let first_clause =
+                                        r.split(':').next().unwrap_or(r.as_str()).trim();
+                                    let cost_str =
+                                        if let Some(recs) = record_map.get(&key) {
+                                            let costs: Vec<f64> =
+                                                recs.iter().filter_map(|r| r.cost_usd).collect();
+                                            if costs.is_empty() {
+                                                String::new()
+                                            } else {
+                                                let total: f64 = costs.iter().sum();
+                                                format!(", ${:.2} burned", total)
+                                            }
+                                        } else {
+                                            String::new()
+                                        };
+                                    // Extract the detail clause (between ":" and the cost suffix)
+                                    let detail_clause: String = r
+                                        .split_once(':')
+                                        .map(|(_, rest)| {
+                                            // strip trailing ", $X.XX burned" if present
+                                            let rest = rest.trim();
+                                            if let Some(pos) = rest.rfind(", $") {
+                                                rest[..pos].to_string()
+                                            } else {
+                                                rest.to_string()
+                                            }
+                                        })
+                                        .unwrap_or_default();
+                                    if detail_clause.is_empty() {
+                                        format!("  [BLOCKED: {}{}]", first_clause, cost_str)
+                                            .red()
+                                            .to_string()
+                                    } else {
+                                        format!(
+                                            "  [BLOCKED: {}, {}{}]",
+                                            first_clause, detail_clause, cost_str
+                                        )
+                                        .red()
+                                        .to_string()
+                                    }
+                                } else {
+                                    // Without detail: just the issue type (before ":")
+                                    let first_clause =
+                                        r.split(':').next().unwrap_or(r.as_str()).trim();
+                                    format!("  [BLOCKED: {}]", first_clause).red().to_string()
+                                }
+                            }
+                            None => "  [BLOCKED]".red().to_string(),
+                        }
+                    } else {
+                        String::new()
                     };
+
                     // Append timing/cost only for completed or in-progress steps with data
                     let timing_suffix =
                         if matches!(step.status, StepStatus::Complete | StepStatus::InProgress) {
-                            let key = (ph.id.clone(), track.id.clone(), step.id.clone());
                             if let Some(recs) = record_map.get(&key) {
                                 let total_ms: u64 = recs.iter().map(|r| r.duration_ms).sum();
                                 let total_cost: Option<f64> = {
@@ -1362,7 +1423,6 @@ pub fn print_status(state: &ProjectState, detail: bool) -> Result<()> {
                         };
                     println!("  {} {} — {}{}{}", icon, step.id, step.title, suffix, timing_suffix);
                 }
-            }
         }
         println!();
     }
