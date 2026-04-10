@@ -372,7 +372,7 @@ fn cmd_next_inner(
             }
 
             let run_result =
-                executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref());
+                executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref(), None);
 
             let (completed, blocked) = match run_result {
                 Ok(()) => {
@@ -569,7 +569,7 @@ fn cmd_auto_inner(
                     *count = disk_attempts;
                 }
 
-                if let Err(e) = executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
+                if let Err(e) = executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref(), None) {
                     emit_output(&sender, &format!("Step failed: {}", e));
                     *count += 1;
                     state::increment_step_attempts(&phase_id, &track_id, &step_id)?;

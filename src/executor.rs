@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::Path;
 
 use crate::{claude, events, events::EventSender, git, prompt, run_record, state, verifier};
 
@@ -9,7 +10,7 @@ pub fn run_next(project_state: &state::ProjectState, sender: Option<&EventSender
     match project_state.next_pending_step() {
         Some((phase_id, track_id, step_id)) => {
             events::emit(sender, &format!("Executing {}/{}/{}...", phase_id, track_id, step_id));
-            run_step(project_state, &phase_id, &track_id, &step_id, sender)?;
+            run_step(project_state, &phase_id, &track_id, &step_id, sender, None)?;
             if let Some(tx) = sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
             let verify_passed = match verifier::run_step(project_state, &phase_id, &track_id, &step_id, sender) {
                 Ok(()) => true,
@@ -41,11 +42,15 @@ pub fn run_step(
     track_id: &str,
     step_id: &str,
     sender: Option<&EventSender>,
+    worktree_dir: Option<&Path>,
 ) -> Result<()> {
     state::mark_step_in_progress(phase_id, track_id, step_id)?;
 
-    // Ensure we're on the right branch
-    git::create_track_branch(phase_id, track_id)?;
+    // When running in a worktree, the branch is already checked out there.
+    // For serial execution (worktree_dir == None), switch to the track branch as before.
+    if worktree_dir.is_none() {
+        git::create_track_branch(phase_id, track_id)?;
+    }
 
     // Prepare log file (truncate/create fresh for this step execution)
     let log_path = state::step_output_log_path(phase_id, track_id, step_id);
@@ -57,7 +62,7 @@ pub fn run_step(
 
     // Plan the track before executing the first step
     if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── plan ──".into() }); }
-    let plan_output = plan_track(project_state, phase_id, track_id, step_id, sender)?;
+    let plan_output = plan_track(project_state, phase_id, track_id, step_id, sender, worktree_dir)?;
     if let Some(output) = plan_output {
         append_to_log(&log_path, "--- track planning ---\n", &output);
     }
@@ -100,10 +105,16 @@ pub fn run_step(
         summary_path.display(),
     );
 
-    let opts = claude::ClaudeOptions::new(rendered)
+    // NOTE: State file reads (read_step_plan, read_context, etc.) use relative `.mz/` paths and
+    // must be called from the main repo root. This works because the orchestrator's CWD never
+    // changes — only the Claude subprocess CWD is set to the worktree via opts.cwd().
+    let mut opts = claude::ClaudeOptions::new(rendered)
         .model("sonnet")
         .max_turns(50)
         .system_prompt(&sys_prompt);
+    if let Some(dir) = worktree_dir {
+        opts = opts.cwd(dir.to_path_buf());
+    }
 
     if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── execute ──".into() }); }
     let step_output = claude::run(opts, sender);
@@ -157,11 +168,11 @@ pub fn run_step(
 
     // Summarize what was done before committing
     if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── summarize ──".into() }); }
-    let summary_output = summarize_step(phase_id, track_id, step_id, sender)?;
+    let summary_output = summarize_step(phase_id, track_id, step_id, sender, worktree_dir)?;
     append_to_log(&log_path, "--- summarization ---\n", &summary_output);
 
-    // Commit the work
-    git::commit_step(phase_id, track_id, step_id, &step_title)?;
+    // Commit the work; pass worktree_dir so git runs inside the worktree when set.
+    git::commit_step(phase_id, track_id, step_id, &step_title, worktree_dir)?;
 
     Ok(())
 }
@@ -199,6 +210,7 @@ fn plan_track(
     track_id: &str,
     step_id: &str,
     sender: Option<&EventSender>,
+    worktree_dir: Option<&Path>,
 ) -> Result<Option<String>> {
     if !is_first_step_of_track(project_state, phase_id, track_id, step_id) {
         return Ok(None);
@@ -227,10 +239,13 @@ fn plan_track(
         phase_id, track_id, track_plan_path.display()
     );
 
-    let opts = claude::ClaudeOptions::new(rendered)
+    let mut opts = claude::ClaudeOptions::new(rendered)
         .model("opus")
         .max_turns(30)
         .system_prompt(&sys_prompt);
+    if let Some(dir) = worktree_dir {
+        opts = opts.cwd(dir.to_path_buf());
+    }
 
     let plan_result = claude::run(opts, sender);
     match &plan_result {
@@ -279,7 +294,7 @@ fn plan_track(
     Ok(Some(plan_result?.output))
 }
 
-fn summarize_step(phase_id: &str, track_id: &str, step_id: &str, sender: Option<&EventSender>) -> Result<String> {
+fn summarize_step(phase_id: &str, track_id: &str, step_id: &str, sender: Option<&EventSender>, worktree_dir: Option<&Path>) -> Result<String> {
     let step_plan = state::read_step_plan(phase_id, track_id, step_id)?;
     let summary_path = state::step_summary_path(phase_id, track_id, step_id);
 
@@ -297,10 +312,13 @@ fn summarize_step(phase_id: &str, track_id: &str, step_id: &str, sender: Option<
         summary_path.display()
     );
 
-    let opts = claude::ClaudeOptions::new(rendered)
+    let mut opts = claude::ClaudeOptions::new(rendered)
         .model("sonnet")
         .max_turns(20)
         .system_prompt(&sys_prompt);
+    if let Some(dir) = worktree_dir {
+        opts = opts.cwd(dir.to_path_buf());
+    }
 
     let summarize_result = claude::run(opts, sender);
     match &summarize_result {

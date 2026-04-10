@@ -71,25 +71,32 @@ pub fn create_track_branch(phase_id: &str, track_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn commit_step(phase_id: &str, track_id: &str, step_id: &str, title: &str) -> Result<()> {
-    Command::new("git")
-        .args(["add", "-A"])
-        .output()
-        .context("Failed to git add")?;
+pub fn commit_step(phase_id: &str, track_id: &str, step_id: &str, title: &str, cwd: Option<&Path>) -> Result<()> {
+    let mut add_cmd = Command::new("git");
+    add_cmd.args(["add", "-A"]);
+    if let Some(dir) = cwd {
+        add_cmd.current_dir(dir);
+    }
+    add_cmd.output().context("Failed to git add")?;
 
-    let status = Command::new("git")
-        .args(["diff", "--cached", "--quiet"])
-        .output()?;
+    let mut status_cmd = Command::new("git");
+    status_cmd.args(["diff", "--cached", "--quiet"]);
+    if let Some(dir) = cwd {
+        status_cmd.current_dir(dir);
+    }
+    let status = status_cmd.output()?;
 
     if status.status.success() {
         return Ok(());
     }
 
     let message = format!("{}/{}/{}: {}", phase_id, track_id, step_id, title);
-    let output = Command::new("git")
-        .args(["commit", "-m", &message])
-        .output()
-        .context("Failed to git commit")?;
+    let mut commit_cmd = Command::new("git");
+    commit_cmd.args(["commit", "-m", &message]);
+    if let Some(dir) = cwd {
+        commit_cmd.current_dir(dir);
+    }
+    let output = commit_cmd.output().context("Failed to git commit")?;
 
     // BUG-5 fix: check git commit exit status
     if !output.status.success() {
