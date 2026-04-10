@@ -304,6 +304,13 @@ impl DashboardState {
                     format!("━━━ Phase {} → {} ━━━", from, to),
                 ));
             }
+
+            ProgressEvent::BudgetExhausted { spent, limit } => {
+                self.flush_partial();
+                self.output_lines.push_back(OutputLine::Label(
+                    format!("Budget exhausted: ${:.4} of ${:.4}", spent, limit),
+                ));
+            }
         }
 
         while self.output_lines.len() > MAX_OUTPUT_LINES {

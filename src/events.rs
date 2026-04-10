@@ -16,6 +16,7 @@ pub enum ProgressEvent {
     ModelDetected { model: String },
     ExecutionFinished { completed: usize, blocked: usize },
     PhaseTransition { from: String, to: String },
+    BudgetExhausted { spent: f64, limit: f64 },
 }
 
 pub type EventSender = mpsc::Sender<ProgressEvent>;

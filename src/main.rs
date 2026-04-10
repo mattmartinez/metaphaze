@@ -44,13 +44,20 @@ enum Commands {
     },
 
     /// Execute the next pending step
-    Next,
+    Next {
+        /// Override budget limit for this run only (does not persist)
+        #[arg(long)]
+        max_budget_usd: Option<f64>,
+    },
 
     /// Autonomous loop — execute all steps until phase complete or blocked
     Auto {
         /// Maximum steps to execute before stopping
         #[arg(long)]
         max_steps: Option<usize>,
+        /// Override budget limit for this run only (does not persist)
+        #[arg(long)]
+        max_budget_usd: Option<f64>,
     },
 
     /// Show current progress
@@ -123,8 +130,8 @@ fn main() -> Result<()> {
         Commands::Init => cmd_init(),
         Commands::Discuss { phase } => cmd_discuss(phase),
         Commands::Plan { phase } => cmd_plan(phase, no_tui),
-        Commands::Next => cmd_next(no_tui),
-        Commands::Auto { max_steps } => cmd_auto(max_steps, no_tui),
+        Commands::Next { max_budget_usd } => cmd_next(max_budget_usd, no_tui),
+        Commands::Auto { max_steps, max_budget_usd } => cmd_auto(max_steps, max_budget_usd, no_tui),
         Commands::Status { detail } => cmd_status(detail),
         Commands::Steer { message } => cmd_steer(message),
         Commands::Reset { step_id, phase } => {
@@ -267,25 +274,49 @@ fn cmd_plan_inner(
     }
 }
 
-fn cmd_next(no_tui: bool) -> Result<()> {
+fn cmd_next(max_budget_usd: Option<f64>, no_tui: bool) -> Result<()> {
     if !no_tui && tui::is_interactive() {
         let project_state = state::load()?;
         tui::run_with_tui(project_state, move |sender, stop, paused| {
-            cmd_next_inner(sender, stop, paused)
+            cmd_next_inner(max_budget_usd, sender, stop, paused)
         })
     } else {
-        let project_state = state::load()?;
-        executor::run_next(&project_state, None)?;
-        Ok(())
+        cmd_next_inner(
+            max_budget_usd,
+            None,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
     }
 }
 
 fn cmd_next_inner(
+    max_budget_usd: Option<f64>,
     sender: Option<events::EventSender>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     _paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     use std::sync::atomic::Ordering;
+
+    // Budget check before executing
+    let budget_config = budget::load()?;
+    let effective_config = match max_budget_usd {
+        Some(limit) => budget::BudgetConfig { max_usd: Some(limit) },
+        None => budget_config,
+    };
+    let records = run_record::load_all()?;
+    let status = budget::check(&effective_config, &records);
+    if status.exhausted {
+        let limit = status.limit.unwrap_or(0.0);
+        emit_output(&sender, &format!(
+            "Budget exhausted: ${:.4} spent of ${:.4} limit. Stopping.",
+            status.spent, limit
+        ));
+        if let Some(tx) = &sender {
+            let _ = tx.send(events::ProgressEvent::BudgetExhausted { spent: status.spent, limit });
+        }
+        return Ok(());
+    }
 
     let project_state = state::load()?;
 
@@ -380,6 +411,11 @@ fn cmd_next_inner(
                 }
             };
 
+            // Post-step: print total spend so far
+            let records = run_record::load_all()?;
+            let status = budget::check(&effective_config, &records);
+            emit_output(&sender, &format!("Total spent so far: ${:.4}", status.spent));
+
             if let Some(tx) = &sender {
                 let _ = tx.send(events::ProgressEvent::ExecutionFinished { completed, blocked });
             }
@@ -398,15 +434,16 @@ fn cmd_next_inner(
     Ok(())
 }
 
-fn cmd_auto(max_steps: Option<usize>, no_tui: bool) -> Result<()> {
+fn cmd_auto(max_steps: Option<usize>, max_budget_usd: Option<f64>, no_tui: bool) -> Result<()> {
     if !no_tui && tui::is_interactive() {
         let project_state = state::load()?;
         tui::run_with_tui(project_state, move |sender, stop, paused| {
-            cmd_auto_inner(max_steps, sender, stop, paused)
+            cmd_auto_inner(max_steps, max_budget_usd, sender, stop, paused)
         })
     } else {
         cmd_auto_inner(
             max_steps,
+            max_budget_usd,
             None,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -420,6 +457,7 @@ fn emit_output(sender: &Option<events::EventSender>, msg: &str) {
 
 fn cmd_auto_inner(
     max_steps: Option<usize>,
+    max_budget_usd: Option<f64>,
     sender: Option<events::EventSender>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -452,6 +490,26 @@ fn cmd_auto_inner(
 
         if completed >= limit {
             emit_output(&sender, &format!("Reached step limit ({}). Stopping.", limit));
+            break;
+        }
+
+        // Budget check before each step
+        let budget_config = budget::load()?;
+        let effective_config = match max_budget_usd {
+            Some(l) => budget::BudgetConfig { max_usd: Some(l) },
+            None => budget_config,
+        };
+        let records = run_record::load_all()?;
+        let bstatus = budget::check(&effective_config, &records);
+        if bstatus.exhausted {
+            let blimit = bstatus.limit.unwrap_or(0.0);
+            emit_output(&sender, &format!(
+                "Budget exhausted: ${:.4} spent of ${:.4} limit. Stopping.",
+                bstatus.spent, blimit
+            ));
+            if let Some(tx) = &sender {
+                let _ = tx.send(events::ProgressEvent::BudgetExhausted { spent: bstatus.spent, limit: blimit });
+            }
             break;
         }
 
@@ -550,6 +608,17 @@ fn cmd_auto_inner(
                         let _ = tx.send(events::ProgressEvent::StepCompleted {
                             track_id: track_id.clone(),
                         });
+                    }
+                    // Post-step budget warning (80% spend threshold)
+                    let records = run_record::load_all()?;
+                    let status = budget::check(&effective_config, &records);
+                    if let Some(remaining) = status.remaining {
+                        if remaining > 0.0 && remaining < status.limit.unwrap_or(f64::MAX) * 0.2 {
+                            emit_output(&sender, &format!(
+                                "⚠ Budget warning: ${:.4} remaining of ${:.4}",
+                                remaining, status.limit.unwrap()
+                            ));
+                        }
                     }
                 } else {
                     state::mark_step_blocked(&phase_id, &track_id, &step_id, "Verification failed")?;
