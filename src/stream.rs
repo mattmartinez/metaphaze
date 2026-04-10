@@ -29,12 +29,12 @@ pub enum StreamEvent {
     /// Final event — contains the assembled response and run metadata.
     Result {
         result: String,
-        #[serde(default, rename = "cost_usd")]
-        _cost_usd: Option<f64>,
-        #[serde(default, rename = "duration_ms")]
-        _duration_ms: Option<u64>,
-        #[serde(default, rename = "num_turns")]
-        _num_turns: Option<u32>,
+        #[serde(default)]
+        cost_usd: Option<f64>,
+        #[serde(default)]
+        duration_ms: Option<u64>,
+        #[serde(default)]
+        num_turns: Option<u32>,
     },
     /// An error occurred during the run.
     Error {
@@ -215,7 +215,14 @@ mod tests {
     fn test_result_event_still_parses() {
         let line = r#"{"type":"result","result":"final answer","cost_usd":0.01,"duration_ms":1200,"num_turns":3}"#;
         let event = parse_stream_line(line).expect("should parse");
-        assert!(matches!(event, StreamEvent::Result { .. }));
+        if let StreamEvent::Result { result, cost_usd, duration_ms, num_turns } = event {
+            assert_eq!(result, "final answer");
+            assert_eq!(cost_usd, Some(0.01));
+            assert_eq!(duration_ms, Some(1200));
+            assert_eq!(num_turns, Some(3));
+        } else {
+            panic!("expected Result variant");
+        }
     }
 
     #[test]

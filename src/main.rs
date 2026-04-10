@@ -9,6 +9,7 @@ mod planner;
 mod prompt;
 mod state;
 mod verifier;
+mod run_record;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

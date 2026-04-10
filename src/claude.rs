@@ -211,8 +211,12 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                             eprintln!("  {} {}", "✓".dimmed(), result_tool.dimmed());
                         }
                     }
-                    Some(StreamEvent::Result { result, .. }) => {
+                    Some(StreamEvent::Result { result, cost_usd, duration_ms, num_turns }) => {
                         dbg_other_parsed += 1;
+                        let run_cost = cost_usd;
+                        let run_duration = duration_ms;
+                        let run_turns = num_turns;
+                        let _ = (run_cost, run_duration, run_turns);
                         stdout = result;
                         result_received = true;
                         if let Some(tx) = sender {

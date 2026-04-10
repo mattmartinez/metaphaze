@@ -19,6 +19,7 @@ chrono = { version = "0.4", features = ["serde"] }
 colored = "2"
 dialoguer = "0.11"
 regex = "1"
+uuid = { version = "1", features = ["v4"] }
 ratatui = "0.29"
 crossterm = "0.28"
 unicode-width = "0.2"
