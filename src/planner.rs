@@ -22,10 +22,20 @@ pub fn generate_roadmap(project_state: &state::ProjectState, sender: Option<&eve
         completed_phases.push_str(&format!("## {} — {} [COMPLETED]\n", phase_id, title));
     }
 
+    let existing_roadmap = {
+        let path = state::roadmap_global_path();
+        if path.exists() {
+            fs::read_to_string(&path).unwrap_or_default()
+        } else {
+            String::new()
+        }
+    };
+
     let mut vars = prompt::vars();
     prompt::set(&mut vars, "project", &project_md);
     prompt::set(&mut vars, "decisions", &decisions);
     prompt::set(&mut vars, "completed_phases", &completed_phases);
+    prompt::set(&mut vars, "existing_roadmap", &existing_roadmap);
 
     let rendered = prompt::render(prompt::templates::PLAN_ROADMAP, &vars);
 
@@ -52,9 +62,7 @@ pub fn generate_roadmap(project_state: &state::ProjectState, sender: Option<&eve
     // Parse and create skeleton phases
     let phases = parse_roadmap(&result);
     let phase_count = phases.len();
-    for phase in phases {
-        state::create_skeleton_phase(&phase.id, &phase.title)?;
-    }
+    apply_roadmap_phases(&phases)?;
 
     events::emit(
         sender,
@@ -385,6 +393,21 @@ pub(crate) fn parse_roadmap(text: &str) -> Vec<ParsedPhase> {
     phases
 }
 
+fn apply_roadmap_phases(phases: &[ParsedPhase]) -> Result<()> {
+    for phase in phases {
+        state::create_skeleton_phase(&phase.id, &phase.title)?;
+    }
+    let new_ids: std::collections::HashSet<&str> =
+        phases.iter().map(|p| p.id.as_str()).collect();
+    let prior = state::load()?;
+    for ph in &prior.phases {
+        if !new_ids.contains(ph.id.as_str()) && ph.tracks.is_empty() {
+            state::remove_skeleton_phase(&ph.id)?;
+        }
+    }
+    Ok(())
+}
+
 /// Parse tracks and steps from plan output, write plan files to disk, return track entries.
 fn parse_and_write_tracks(phase_id: &str, plan_output: &str) -> Result<Vec<state::TrackEntry>> {
     let parsed_tracks = parse_plan(plan_output);
@@ -644,6 +667,80 @@ Still to do.
     fn test_parse_roadmap_empty_returns_empty() {
         let phases = parse_roadmap("");
         assert!(phases.is_empty());
+    }
+
+    #[test]
+    fn test_roadmap_regeneration_preserves_completed() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let mz_path = dir.path().join(".mz");
+        fs::create_dir_all(&mz_path).unwrap();
+        state::set_test_mz_dir(Some(mz_path));
+
+        // Set up state: P001 has tracks (simulates completed), P002 is skeleton (no tracks)
+        let initial_state = state::ProjectState {
+            name: "test".to_string(),
+            description: "test project".to_string(),
+            current_phase: "P001".to_string(),
+            phases: vec![
+                state::PhaseEntry {
+                    id: "P001".to_string(),
+                    title: "Foundation".to_string(),
+                    tracks: vec![state::TrackEntry {
+                        id: "TR01".to_string(),
+                        title: "Track 1".to_string(),
+                        depends_on: vec![],
+                        steps: vec![state::StepEntry {
+                            id: "ST01".to_string(),
+                            title: "Step 1".to_string(),
+                            status: state::StepStatus::Complete,
+                            blocked_reason: None,
+                            attempts: 1,
+                        }],
+                    }],
+                },
+                state::PhaseEntry {
+                    id: "P002".to_string(),
+                    title: "Old Skeleton".to_string(),
+                    tracks: vec![],
+                },
+            ],
+        };
+        state::save(&initial_state).unwrap();
+
+        // Re-plan with P001 and P003 (P002 is dropped, P003 is new)
+        let new_phases = vec![
+            ParsedPhase {
+                id: "P001".to_string(),
+                title: "Foundation".to_string(),
+                description: String::new(),
+            },
+            ParsedPhase {
+                id: "P003".to_string(),
+                title: "New Phase".to_string(),
+                description: String::new(),
+            },
+        ];
+        apply_roadmap_phases(&new_phases).unwrap();
+
+        let s = state::load().unwrap();
+
+        // P001 untouched (has tracks — create_skeleton_phase is a no-op for it)
+        let p1 = s.phases.iter().find(|p| p.id == "P001").unwrap();
+        assert_eq!(p1.title, "Foundation");
+        assert!(!p1.tracks.is_empty());
+
+        // P002 removed (was skeleton, not in new plan)
+        assert!(s.phases.iter().find(|p| p.id == "P002").is_none());
+
+        // P003 created as skeleton
+        let p3 = s.phases.iter().find(|p| p.id == "P003").unwrap();
+        assert_eq!(p3.title, "New Phase");
+        assert!(p3.tracks.is_empty());
+
+        state::set_test_mz_dir(None);
     }
 }
 

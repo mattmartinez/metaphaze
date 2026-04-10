@@ -524,6 +524,15 @@ pub fn create_skeleton_phase(phase_id: &str, title: &str) -> Result<()> {
     })
 }
 
+pub fn remove_skeleton_phase(phase_id: &str) -> Result<()> {
+    mutate_state(|state| {
+        state.phases.retain(|ph| {
+            !(ph.id == phase_id && ph.tracks.is_empty())
+        });
+        Ok(())
+    })
+}
+
 pub fn completed_phase_ids() -> Result<Vec<String>> {
     let state = load()?;
     Ok(state
@@ -832,6 +841,11 @@ pub fn collect_dependency_summaries(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_mz_dir(path: Option<std::path::PathBuf>) {
+    TEST_MZ_DIR.with(|d| *d.borrow_mut() = path);
 }
 
 #[cfg(test)]
@@ -1200,6 +1214,37 @@ mod tests {
         assert_eq!(normalize_phase_id("p008"), "P008");
         assert_eq!(normalize_phase_id("P008"), "P008");
         assert_eq!(normalize_phase_id("p001"), "P001");
+    }
+
+    #[test]
+    fn test_remove_skeleton_phase() {
+        let _tmp = TempMz::new();
+
+        // State: P001 has tracks, P002 is a skeleton (no tracks)
+        let mut state = make_state();
+        state.phases.push(PhaseEntry {
+            id: "P002".to_string(),
+            title: "Phase Two".to_string(),
+            tracks: vec![],
+        });
+        save(&state).unwrap();
+
+        // Removing a skeleton phase works
+        remove_skeleton_phase("P002").unwrap();
+        let s = load().unwrap();
+        assert!(s.phases.iter().find(|p| p.id == "P002").is_none());
+        assert!(s.phases.iter().find(|p| p.id == "P001").is_some());
+
+        // Removing a phase with tracks is a no-op
+        remove_skeleton_phase("P001").unwrap();
+        let s = load().unwrap();
+        assert!(s.phases.iter().find(|p| p.id == "P001").is_some());
+        assert!(!s.phases.iter().find(|p| p.id == "P001").unwrap().tracks.is_empty());
+
+        // Removing a non-existent phase is a no-op (no error)
+        remove_skeleton_phase("P999").unwrap();
+        let s = load().unwrap();
+        assert_eq!(s.phases.len(), 1); // only P001 remains
     }
 }
 
