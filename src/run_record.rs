@@ -4,6 +4,16 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_MZ_DIR: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_mz_dir(path: Option<PathBuf>) {
+    TEST_MZ_DIR.with(|d| *d.borrow_mut() = path);
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RunRecord {
     pub id: String,
@@ -22,6 +32,13 @@ pub struct RunRecord {
 }
 
 pub fn ledger_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        let override_dir = TEST_MZ_DIR.with(|d| d.borrow().clone());
+        if let Some(dir) = override_dir {
+            return dir.join("runs.jsonl");
+        }
+    }
     PathBuf::from(".mz/runs.jsonl")
 }
 
@@ -132,7 +149,27 @@ pub fn load_all() -> Result<Vec<RunRecord>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
     use uuid::Uuid;
+
+    /// RAII guard: sets the thread-local mz dir override for the duration of the test.
+    struct TempMz {
+        _dir: TempDir,
+    }
+
+    impl TempMz {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            set_test_mz_dir(Some(dir.path().to_path_buf()));
+            TempMz { _dir: dir }
+        }
+    }
+
+    impl Drop for TempMz {
+        fn drop(&mut self) {
+            set_test_mz_dir(None);
+        }
+    }
 
     fn make_record() -> RunRecord {
         RunRecord {
@@ -141,7 +178,7 @@ mod tests {
             track_id: "TR01".to_string(),
             step_id: "ST01".to_string(),
             stage: "execute".to_string(),
-            model: "sonnet".to_string(),
+            model: "claude-sonnet-4-6".to_string(),
             started_at: "2026-04-09T00:00:00Z".to_string(),
             finished_at: "2026-04-09T00:00:01Z".to_string(),
             duration_ms: 1000,
@@ -153,49 +190,94 @@ mod tests {
     }
 
     #[test]
-    fn test_append_and_load() {
-        let dir = tempfile::tempdir().unwrap();
-        let mz_dir = dir.path().join(".mz");
-        std::fs::create_dir_all(&mz_dir).unwrap();
-
-        // Temporarily override ledger path by writing directly
-        let path = mz_dir.join("runs.jsonl");
-        let record = make_record();
-        let line = serde_json::to_string(&record).unwrap();
-        std::fs::write(&path, format!("{}\n", line)).unwrap();
-
-        // Parse it back
-        let contents = std::fs::read_to_string(&path).unwrap();
-        let parsed: RunRecord = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
-        assert_eq!(parsed.phase_id, "P001");
-        assert_eq!(parsed.outcome, "success");
-        assert_eq!(parsed.cost_usd, Some(0.01));
-        assert_eq!(parsed.num_turns, Some(3));
-        assert!(parsed.error.is_none());
-    }
-
-    #[test]
-    fn test_load_all_missing_file_returns_empty() {
-        // Point to a non-existent path — load_all uses ledger_path() which is .mz/runs.jsonl
-        // This test verifies the "file doesn't exist" branch returns Ok(vec![])
-        // We test it indirectly by confirming serialization round-trips cleanly
+    fn test_roundtrip_serialization() {
         let record = make_record();
         let json = serde_json::to_string(&record).unwrap();
         let parsed: RunRecord = serde_json::from_str(&json).unwrap();
         assert_eq!(record.id, parsed.id);
+        assert_eq!(record.phase_id, parsed.phase_id);
+        assert_eq!(record.track_id, parsed.track_id);
+        assert_eq!(record.step_id, parsed.step_id);
+        assert_eq!(record.stage, parsed.stage);
+        assert_eq!(record.model, parsed.model);
+        assert_eq!(record.started_at, parsed.started_at);
+        assert_eq!(record.finished_at, parsed.finished_at);
+        assert_eq!(record.duration_ms, parsed.duration_ms);
+        assert_eq!(record.cost_usd, parsed.cost_usd);
+        assert_eq!(record.num_turns, parsed.num_turns);
+        assert_eq!(record.outcome, parsed.outcome);
+        assert_eq!(record.error, parsed.error);
     }
 
     #[test]
-    fn test_blank_lines_skipped() {
-        let json = serde_json::to_string(&make_record()).unwrap();
-        let input = format!("\n{}\n\n", json);
-        let mut records = Vec::new();
-        for line in input.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            records.push(serde_json::from_str::<RunRecord>(line).unwrap());
-        }
-        assert_eq!(records.len(), 1);
+    fn test_append_and_load() {
+        let _mz = TempMz::new();
+
+        let r1 = RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P001".to_string(), track_id: "TR01".to_string(), step_id: "ST01".to_string(), stage: "execute".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:00Z".to_string(), finished_at: "2026-01-01T00:00:01Z".to_string(), duration_ms: 100, cost_usd: Some(0.01), num_turns: Some(1), outcome: "success".to_string(), error: None };
+        let r2 = RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P001".to_string(), track_id: "TR01".to_string(), step_id: "ST02".to_string(), stage: "verify".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:02Z".to_string(), finished_at: "2026-01-01T00:00:03Z".to_string(), duration_ms: 200, cost_usd: Some(0.02), num_turns: Some(2), outcome: "success".to_string(), error: None };
+        let r3 = RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P002".to_string(), track_id: "TR02".to_string(), step_id: "ST01".to_string(), stage: "execute".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:04Z".to_string(), finished_at: "2026-01-01T00:00:05Z".to_string(), duration_ms: 300, cost_usd: None, num_turns: None, outcome: "error".to_string(), error: Some("boom".to_string()) };
+
+        append(&r1).unwrap();
+        append(&r2).unwrap();
+        append(&r3).unwrap();
+
+        let records = load_all().unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].step_id, "ST01");
+        assert_eq!(records[0].phase_id, "P001");
+        assert_eq!(records[1].step_id, "ST02");
+        assert_eq!(records[2].phase_id, "P002");
+        assert_eq!(records[2].outcome, "error");
+        assert_eq!(records[2].error, Some("boom".to_string()));
+        assert_eq!(records[2].cost_usd, None);
+        assert_eq!(records[2].num_turns, None);
+    }
+
+    #[test]
+    fn test_load_empty_file() {
+        let _mz = TempMz::new();
+        // ledger_path() returns inside the temp dir, which doesn't have runs.jsonl yet
+        let records = load_all().unwrap();
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn test_load_with_blank_lines() {
+        let _mz = TempMz::new();
+        let path = ledger_path();
+
+        let record = make_record();
+        let json = serde_json::to_string(&record).unwrap();
+        // Write blank lines interspersed
+        std::fs::write(&path, format!("\n{}\n\n{}\n\n", json, json)).unwrap();
+
+        let records = load_all().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].id, record.id);
+    }
+
+    #[test]
+    fn test_optional_fields() {
+        let record = RunRecord {
+            id: Uuid::new_v4().to_string(),
+            phase_id: "P001".to_string(),
+            track_id: "TR01".to_string(),
+            step_id: "ST01".to_string(),
+            stage: "execute".to_string(),
+            model: "m".to_string(),
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            finished_at: "2026-01-01T00:00:01Z".to_string(),
+            duration_ms: 500,
+            cost_usd: None,
+            num_turns: None,
+            outcome: "success".to_string(),
+            error: None,
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        let parsed: RunRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.cost_usd, None);
+        assert_eq!(parsed.num_turns, None);
+        assert_eq!(parsed.error, None);
+        assert_eq!(parsed.duration_ms, 500);
     }
 }
