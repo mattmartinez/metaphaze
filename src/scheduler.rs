@@ -485,4 +485,82 @@ mod tests {
             "TR03 should be runnable when TR01 is complete"
         );
     }
+
+    /// 3 tracks: TR03 depends on TR01. Initially only TR01+TR02 runnable.
+    /// After marking TR01 complete, TR02+TR03 should be runnable.
+    #[test]
+    fn test_runnable_tracks_respects_deps() {
+        let tr01 = make_track("TR01", vec![], vec![make_step("ST01", StepStatus::Pending)]);
+        let tr02 = make_track("TR02", vec![], vec![make_step("ST01", StepStatus::Pending)]);
+        let tr03 = make_track("TR03", vec!["TR01"], vec![make_step("ST01", StepStatus::Pending)]);
+
+        let state = make_state(vec![tr01, tr02, tr03]);
+        let runnable = runnable_tracks(&state);
+        let ids: Vec<&str> = runnable.iter().map(|(_, t, _)| t.as_str()).collect();
+        assert_eq!(ids.len(), 2, "Only TR01 and TR02 runnable initially: {:?}", ids);
+        assert!(ids.contains(&"TR01"));
+        assert!(ids.contains(&"TR02"));
+        assert!(!ids.contains(&"TR03"), "TR03 blocked by unmet dep on TR01");
+
+        // Mark TR01 complete — now TR02 and TR03 should be runnable.
+        let tr01_done = make_track("TR01", vec![], vec![make_step("ST01", StepStatus::Complete)]);
+        let tr02_still = make_track("TR02", vec![], vec![make_step("ST01", StepStatus::Pending)]);
+        let tr03_unblocked = make_track("TR03", vec!["TR01"], vec![make_step("ST01", StepStatus::Pending)]);
+        let state2 = make_state(vec![tr01_done, tr02_still, tr03_unblocked]);
+        let runnable2 = runnable_tracks(&state2);
+        let ids2: Vec<&str> = runnable2.iter().map(|(_, t, _)| t.as_str()).collect();
+        assert!(ids2.contains(&"TR02"), "TR02 should still be runnable");
+        assert!(ids2.contains(&"TR03"), "TR03 should be runnable after TR01 completes");
+        assert!(!ids2.contains(&"TR01"), "TR01 has no pending steps");
+    }
+
+    /// All steps complete → no runnable tracks.
+    #[test]
+    fn test_runnable_tracks_empty_when_all_complete() {
+        let tr01 = make_track("TR01", vec![], vec![make_step("ST01", StepStatus::Complete)]);
+        let tr02 = make_track("TR02", vec![], vec![make_step("ST01", StepStatus::Complete)]);
+        let state = make_state(vec![tr01, tr02]);
+        let runnable = runnable_tracks(&state);
+        assert!(runnable.is_empty(), "No tracks should be runnable when all steps are complete");
+    }
+
+    /// Only 1 track → runnable_tracks returns it (serial fallback decision is on the caller).
+    #[test]
+    fn test_runnable_tracks_single_track() {
+        let tr01 = make_track("TR01", vec![], vec![make_step("ST01", StepStatus::Pending)]);
+        let state = make_state(vec![tr01]);
+        let runnable = runnable_tracks(&state);
+        assert_eq!(runnable.len(), 1);
+        assert_eq!(runnable[0].1, "TR01");
+    }
+
+    /// When only 1 track is runnable, run_parallel_batch returns immediately with zeros.
+    #[test]
+    fn test_scheduler_serial_fallback() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mz_path = dir.path().join(".mz");
+        fs::create_dir_all(&mz_path).unwrap();
+        crate::state::set_test_mz_dir(Some(mz_path));
+
+        let state = make_state(vec![
+            make_track("TR01", vec![], vec![make_step("ST01", StepStatus::Pending)]),
+        ]);
+        crate::state::save(&state).unwrap();
+
+        let scheduler = ParallelScheduler {
+            sender: None,
+            stop: Arc::new(AtomicBool::new(false)),
+            paused: Arc::new(AtomicBool::new(false)),
+            max_budget_usd: None,
+        };
+
+        let result = scheduler.run_parallel_batch().expect("run_parallel_batch should succeed");
+        assert_eq!(result.completed, 0, "serial fallback should not execute steps");
+        assert_eq!(result.blocked, 0, "serial fallback should not block steps");
+        assert!(result.tracks_finished.is_empty(), "serial fallback returns no finished tracks");
+
+        crate::state::set_test_mz_dir(None);
+    }
 }

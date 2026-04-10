@@ -533,4 +533,48 @@ mod tests {
 
         std::env::set_current_dir(original_dir).unwrap();
     }
+
+    /// Create a worktree, verify the directory exists, remove it, verify it's gone.
+    #[test]
+    fn test_worktree_create_remove_cycle() {
+        let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = init_temp_repo();
+        let p = dir.path();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(p).unwrap();
+
+        let wt_path = create_worktree("P099", "TR88").expect("create_worktree");
+        assert!(wt_path.exists(), "worktree directory should exist after create");
+
+        remove_worktree(&wt_path).expect("remove_worktree");
+        assert!(!wt_path.exists(), "worktree directory should be gone after remove");
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
+    /// Create a worktree, remove it (keeps the branch), then re-add without -b.
+    #[test]
+    fn test_worktree_branch_already_exists() {
+        let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = init_temp_repo();
+        let p = dir.path();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(p).unwrap();
+
+        // First create — creates the branch.
+        let wt_path = create_worktree("P099", "TR77").expect("first create_worktree");
+        assert!(wt_path.exists());
+
+        // Remove worktree (branch persists).
+        remove_worktree(&wt_path).expect("remove after first create");
+        assert!(!wt_path.exists());
+
+        // branch_exists("mz/P099/TR77") is now true — create_worktree must NOT use -b.
+        let wt_path2 = create_worktree("P099", "TR77").expect("create_worktree with existing branch");
+        assert!(wt_path2.exists(), "re-created worktree should exist when branch already exists");
+
+        remove_worktree(&wt_path2).expect("cleanup");
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
 }

@@ -1302,4 +1302,43 @@ mod tests {
         let height_after = if active_count_after > 1 { (4u16 + active_count_after as u16).min(8) } else { 4u16 };
         assert_eq!(height_after, 4);
     }
+
+    /// TokenDelta with a track_id lands in the correct per-track buffer, not the other.
+    #[test]
+    fn test_track_output_routing() {
+        let mut d = make_dashboard();
+
+        // Complete lines (newline-terminated) go into the per-track buffer and the global list.
+        d.update(ProgressEvent::TokenDelta {
+            text: "line from TR01\n".into(),
+            track_id: Some("TR01".into()),
+        });
+        d.update(ProgressEvent::TokenDelta {
+            text: "line from TR02\n".into(),
+            track_id: Some("TR02".into()),
+        });
+
+        // Each track gets its own buffer entry.
+        assert_eq!(
+            d.output_buffers.get("TR01").map(|b| b.len()),
+            Some(1),
+            "TR01 buffer should have exactly 1 line"
+        );
+        assert_eq!(
+            d.output_buffers.get("TR02").map(|b| b.len()),
+            Some(1),
+            "TR02 buffer should have exactly 1 line"
+        );
+
+        // Global output_lines carries both, prefixed by track id.
+        assert_eq!(d.output_lines.len(), 2);
+        assert!(
+            matches!(&d.output_lines[0], OutputLine::Assistant(s) if s.contains("[TR01]")),
+            "First global line should be prefixed with [TR01]"
+        );
+        assert!(
+            matches!(&d.output_lines[1], OutputLine::Assistant(s) if s.contains("[TR02]")),
+            "Second global line should be prefixed with [TR02]"
+        );
+    }
 }

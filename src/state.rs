@@ -1320,6 +1320,44 @@ mod tests {
         let _state: ProjectState = serde_yaml::from_str(&final_yaml)
             .expect("state.yaml is not valid YAML after concurrent writes");
     }
+
+    /// Two threads each call load() and save() 10 times concurrently; final state is valid YAML.
+    #[test]
+    fn test_concurrent_state_access() {
+        let dir = tempfile::tempdir().unwrap();
+        let mz_path = dir.path().join(".mz");
+        fs::create_dir_all(&mz_path).unwrap();
+
+        let initial = make_state();
+        let yaml = serde_yaml::to_string(&initial).unwrap();
+        fs::write(mz_path.join("state.yaml"), &yaml).unwrap();
+
+        let mz_path = std::sync::Arc::new(mz_path);
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let mp = std::sync::Arc::clone(&mz_path);
+                std::thread::spawn(move || {
+                    TEST_MZ_DIR.with(|d| *d.borrow_mut() = Some((*mp).clone()));
+                    for _ in 0..10 {
+                        let mut s = load().expect("load should succeed");
+                        s.name = "concurrent".to_string();
+                        save(&s).expect("save should succeed");
+                    }
+                    TEST_MZ_DIR.with(|d| *d.borrow_mut() = None);
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().expect("thread should not panic");
+        }
+
+        // Final state must be valid YAML with no corruption.
+        let final_yaml = fs::read_to_string(mz_path.join("state.yaml")).unwrap();
+        let final_state: ProjectState = serde_yaml::from_str(&final_yaml)
+            .expect("state.yaml must be valid YAML after concurrent writes");
+        assert_eq!(final_state.current_phase, "P001");
+    }
 }
 
 fn format_duration_ms(ms: u64) -> String {
