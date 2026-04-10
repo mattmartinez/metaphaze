@@ -570,24 +570,31 @@ fn cmd_auto_inner(
                     *count += 1;
                     state::increment_step_attempts(&phase_id, &track_id, &step_id)?;
 
-                    if let Some(tx) = &sender {
-                        let _ = tx.send(events::ProgressEvent::StepFailed {
-                            track_id: track_id.clone(),
-                        });
-                    }
-
                     if *count >= 3 {
-                        emit_output(&sender, &format!("Step {} failed after 3 attempts. Marking blocked.", step_id));
-                        state::mark_step_blocked(
-                            &phase_id,
-                            &track_id,
-                            &step_id,
-                            "Failed after 3 retries",
-                        )?;
+                        let records = run_record::load_all().unwrap_or_default();
+                        let diagnosis = diagnostics::diagnose_step(&records, &phase_id, &track_id, &step_id);
+                        let blocked_reason = diagnosis
+                            .as_ref()
+                            .map(|d| diagnostics::format_blocked_reason(d))
+                            .unwrap_or_else(|| "Failed after 3 retries".to_string());
+                        emit_output(&sender, &format!("Step {} blocked: {}", step_id, blocked_reason));
+                        state::mark_step_blocked(&phase_id, &track_id, &step_id, &blocked_reason)?;
                         blocked += 1;
+                        if let Some(tx) = &sender {
+                            let _ = tx.send(events::ProgressEvent::StepBlocked {
+                                track_id: track_id.clone(),
+                                step_id: step_id.clone(),
+                                reason: blocked_reason,
+                            });
+                        }
                     } else {
                         emit_output(&sender, &format!("Retrying {} (attempt {}/3)", step_id, count));
                         // Step remains InProgress; loop will pick it up again
+                        if let Some(tx) = &sender {
+                            let _ = tx.send(events::ProgressEvent::StepFailed {
+                                track_id: track_id.clone(),
+                            });
+                        }
                     }
                     continue;
                 }
@@ -622,12 +629,36 @@ fn cmd_auto_inner(
                         }
                     }
                 } else {
-                    state::mark_step_blocked(&phase_id, &track_id, &step_id, "Verification failed")?;
-                    blocked += 1;
-                    if let Some(tx) = &sender {
-                        let _ = tx.send(events::ProgressEvent::StepFailed {
-                            track_id: track_id.clone(),
-                        });
+                    *count += 1;
+                    state::increment_step_attempts(&phase_id, &track_id, &step_id)?;
+                    let records = run_record::load_all().unwrap_or_default();
+                    let diagnosis = diagnostics::diagnose_step(&records, &phase_id, &track_id, &step_id);
+                    let is_oscillating = matches!(
+                        diagnosis.as_ref().map(|d| &d.issue),
+                        Some(diagnostics::StepIssue::VerifyOscillation)
+                    );
+                    if *count >= 2 || is_oscillating {
+                        let blocked_reason = diagnosis
+                            .as_ref()
+                            .map(|d| diagnostics::format_blocked_reason(d))
+                            .unwrap_or_else(|| "Verification failed".to_string());
+                        emit_output(&sender, &format!("Step {} blocked: {}", step_id, blocked_reason));
+                        state::mark_step_blocked(&phase_id, &track_id, &step_id, &blocked_reason)?;
+                        blocked += 1;
+                        if let Some(tx) = &sender {
+                            let _ = tx.send(events::ProgressEvent::StepBlocked {
+                                track_id: track_id.clone(),
+                                step_id: step_id.clone(),
+                                reason: blocked_reason,
+                            });
+                        }
+                    } else {
+                        emit_output(&sender, &format!("Verify failed, retrying {} (attempt {}/3)", step_id, count));
+                        if let Some(tx) = &sender {
+                            let _ = tx.send(events::ProgressEvent::StepFailed {
+                                track_id: track_id.clone(),
+                            });
+                        }
                     }
                     continue;
                 }
@@ -653,7 +684,18 @@ fn cmd_auto_inner(
                 let current_phase = project_state.current_phase().to_string();
                 if !project_state.is_phase_complete(&current_phase) {
                     // Some steps are blocked — cannot advance.
-                    emit_output(&sender, "No pending steps. All remaining steps are blocked.");
+                    let records = run_record::load_all().unwrap_or_default();
+                    let diagnoses = diagnostics::diagnose_all_steps(&records, &project_state);
+                    if diagnoses.is_empty() {
+                        emit_output(&sender, "No pending steps. All remaining steps are blocked.");
+                    } else {
+                        let mut msg = format!("No pending steps. {} step{} blocked:", diagnoses.len(), if diagnoses.len() == 1 { " is" } else { "s are" });
+                        for d in &diagnoses {
+                            msg.push_str(&format!("\n  {}/{}: {}", d.track_id, d.step_id, diagnostics::format_blocked_reason(d)));
+                        }
+                        msg.push_str("\nHint: use `mz doctor` for full diagnostics or `mz reset <step>` to retry");
+                        emit_output(&sender, &msg);
+                    }
                     break;
                 }
                 // Phase is fully complete — try to advance to the next phase.

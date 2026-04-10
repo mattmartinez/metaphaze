@@ -242,6 +242,15 @@ impl DashboardState {
                 self.current_step = None;
             }
 
+            ProgressEvent::StepBlocked { reason, .. } => {
+                self.reload_tracks();
+                self.current_step = None;
+                self.flush_partial();
+                self.output_lines.push_back(OutputLine::Label(
+                    format!("Blocked: {}", reason),
+                ));
+            }
+
             ProgressEvent::ClaudeOutput { line } => {
                 self.flush_partial();
                 self.output_lines.push_back(OutputLine::Plain(line));

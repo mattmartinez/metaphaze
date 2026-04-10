@@ -6,6 +6,7 @@ pub enum ProgressEvent {
     StepStarted { track_id: String, step_num: usize, total_steps: usize },
     StepCompleted { track_id: String },
     StepFailed { track_id: String },
+    StepBlocked { track_id: String, step_id: String, reason: String },
     TrackCompleted { track_id: String },
     ClaudeOutput { line: String },
     AssistantText { text: String },
