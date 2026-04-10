@@ -25,7 +25,7 @@ struct Cli {
     no_tui: bool,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -132,22 +132,31 @@ fn main() -> Result<()> {
     let no_tui = cli.no_tui;
 
     match cli.command {
-        Commands::Init => cmd_init(),
-        Commands::Discuss { phase } => cmd_discuss(phase),
-        Commands::Plan { phase } => cmd_plan(phase, no_tui),
-        Commands::Next { max_budget_usd } => cmd_next(max_budget_usd, no_tui),
-        Commands::Auto { max_steps, max_budget_usd } => cmd_auto(max_steps, max_budget_usd, no_tui),
-        Commands::Status { detail } => cmd_status(detail),
-        Commands::Steer { message } => cmd_steer(message),
-        Commands::Reset { step_id, phase } => {
+        None => cmd_interactive(),
+        Some(Commands::Init) => cmd_init(),
+        Some(Commands::Discuss { phase }) => cmd_discuss(phase),
+        Some(Commands::Plan { phase }) => cmd_plan(phase, no_tui),
+        Some(Commands::Next { max_budget_usd }) => cmd_next(max_budget_usd, no_tui),
+        Some(Commands::Auto { max_steps, max_budget_usd }) => cmd_auto(max_steps, max_budget_usd, no_tui),
+        Some(Commands::Status { detail }) => cmd_status(detail),
+        Some(Commands::Steer { message }) => cmd_steer(message),
+        Some(Commands::Reset { step_id, phase }) => {
             let project_state = state::load()?;
             let phase_id = state::normalize_phase_id(&phase.unwrap_or_else(|| project_state.current_phase().to_string()));
             state::reset_step(&phase_id, &step_id)
         }
-        Commands::Budget { action } => cmd_budget(action),
-        Commands::Log { phase, track, failed, last, detail, summary } => cmd_log(phase, track, failed, last, detail, summary),
-        Commands::Doctor => cmd_doctor(),
+        Some(Commands::Budget { action }) => cmd_budget(action),
+        Some(Commands::Log { phase, track, failed, last, detail, summary }) => cmd_log(phase, track, failed, last, detail, summary),
+        Some(Commands::Doctor) => cmd_doctor(),
     }
+}
+
+fn cmd_interactive() -> Result<()> {
+    if !tui::is_interactive() {
+        eprintln!("Interactive shell requires a terminal");
+        std::process::exit(1);
+    }
+    tui::run_interactive()
 }
 
 fn cmd_budget(action: Option<BudgetAction>) -> Result<()> {

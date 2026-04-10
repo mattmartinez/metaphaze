@@ -462,6 +462,14 @@ impl DashboardState {
     }
 }
 
+// ── ShellMode ─────────────────────────────────────────────────────────────────
+
+pub enum ShellMode {
+    Idle,
+    Input,
+    Running { command: String, started_at: Instant },
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 pub struct App {
@@ -473,6 +481,10 @@ pub struct App {
     receiver: Option<EventReceiver>,
     pub stop_signal: Arc<AtomicBool>,
     pub paused: Arc<AtomicBool>,
+    pub mode: ShellMode,
+    pub input_buffer: String,
+    pub input_cursor: usize,
+    pub is_shell: bool,
 }
 
 pub fn init(
@@ -495,6 +507,10 @@ pub fn init(
         receiver: Some(receiver),
         stop_signal,
         paused,
+        mode: ShellMode::Idle,
+        input_buffer: String::new(),
+        input_cursor: 0,
+        is_shell: false,
     })
 }
 
@@ -681,6 +697,154 @@ where
         .map_err(|_| anyhow::anyhow!("background thread panicked"))?
 }
 
+pub fn run_interactive() -> Result<()> {
+    let project_state = match crate::state::load() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to load project state: {}", e);
+            return Ok(());
+        }
+    };
+
+    let dashboard = DashboardState::from_project_state(&project_state);
+    let (tx, rx) = crate::events::channel();
+    // Drop the sender immediately — the shell starts idle with no active command.
+    drop(tx);
+
+    let stop_signal = Arc::new(AtomicBool::new(false));
+    let paused = Arc::new(AtomicBool::new(false));
+    let mut app = init(dashboard, rx, Arc::clone(&stop_signal), Arc::clone(&paused))?;
+    app.is_shell = true;
+
+    let size = app.terminal.size()?;
+    if size.width < MIN_TUI_WIDTH || size.height < MIN_TUI_HEIGHT {
+        app.restore()?;
+        eprintln!("Terminal too small for TUI");
+        return Ok(());
+    }
+
+    loop {
+        app.draw()?;
+
+        if event::poll(Duration::from_millis(100))? {
+            if let event::Event::Key(key) = event::read()? {
+                match &app.mode {
+                    ShellMode::Idle => match key.code {
+                        KeyCode::Char('q') => {
+                            app.running = false;
+                        }
+                        KeyCode::Tab => {
+                            app.focused_panel = app.focused_panel.next();
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => match app.focused_panel {
+                            Panel::Output => {
+                                app.dashboard.user_scrolled = true;
+                                app.dashboard.scroll_offset =
+                                    app.dashboard.scroll_offset.saturating_add(1);
+                            }
+                            Panel::Tracks => {
+                                app.dashboard.track_scroll_offset =
+                                    app.dashboard.track_scroll_offset.saturating_add(1);
+                            }
+                            Panel::Progress => {}
+                        },
+                        KeyCode::Char('k') | KeyCode::Up => match app.focused_panel {
+                            Panel::Output => {
+                                app.dashboard.user_scrolled = true;
+                                app.dashboard.scroll_offset =
+                                    app.dashboard.scroll_offset.saturating_sub(1);
+                            }
+                            Panel::Tracks => {
+                                app.dashboard.track_scroll_offset =
+                                    app.dashboard.track_scroll_offset.saturating_sub(1);
+                            }
+                            Panel::Progress => {}
+                        },
+                        KeyCode::Char(c) => {
+                            app.mode = ShellMode::Input;
+                            app.input_buffer.push(c);
+                            app.input_cursor = 1;
+                        }
+                        _ => {}
+                    },
+                    ShellMode::Input => match key.code {
+                        KeyCode::Char(c) => {
+                            let byte_pos = app
+                                .input_buffer
+                                .char_indices()
+                                .nth(app.input_cursor)
+                                .map(|(i, _)| i)
+                                .unwrap_or(app.input_buffer.len());
+                            app.input_buffer.insert(byte_pos, c);
+                            app.input_cursor += 1;
+                        }
+                        KeyCode::Backspace => {
+                            if app.input_cursor > 0 {
+                                let remove_idx = app.input_cursor - 1;
+                                if let Some((byte_pos, _)) =
+                                    app.input_buffer.char_indices().nth(remove_idx)
+                                {
+                                    app.input_buffer.remove(byte_pos);
+                                    app.input_cursor -= 1;
+                                }
+                                if app.input_buffer.is_empty() {
+                                    app.mode = ShellMode::Idle;
+                                }
+                            }
+                        }
+                        KeyCode::Left => {
+                            app.input_cursor = app.input_cursor.saturating_sub(1);
+                        }
+                        KeyCode::Right => {
+                            let char_count = app.input_buffer.chars().count();
+                            if app.input_cursor < char_count {
+                                app.input_cursor += 1;
+                            }
+                        }
+                        KeyCode::Home => {
+                            app.input_cursor = 0;
+                        }
+                        KeyCode::End => {
+                            app.input_cursor = app.input_buffer.chars().count();
+                        }
+                        KeyCode::Enter => {
+                            if !app.input_buffer.is_empty() {
+                                let cmd = app.input_buffer.clone();
+                                app.dashboard
+                                    .output_lines
+                                    .push_back(OutputLine::Plain(format!("> {}", cmd)));
+                                app.input_buffer.clear();
+                                app.input_cursor = 0;
+                                app.mode = ShellMode::Idle;
+                            }
+                        }
+                        KeyCode::Esc => {
+                            app.input_buffer.clear();
+                            app.input_cursor = 0;
+                            app.mode = ShellMode::Idle;
+                        }
+                        _ => {}
+                    },
+                    ShellMode::Running { .. } => {
+                        if let KeyCode::Char('q') = key.code {
+                            // Stop running command, return to idle
+                            app.stop_signal.store(true, Ordering::Relaxed);
+                            app.mode = ShellMode::Idle;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !app.running {
+            break;
+        }
+    }
+
+    app.restore()?;
+    Ok(())
+}
+
 impl App {
     pub fn restore(&mut self) -> Result<()> {
         if self.restored {
@@ -762,6 +926,23 @@ impl App {
             }
         });
         let elapsed = dashboard.start_time.elapsed();
+
+        // Snapshot shell-mode state for the draw closure (borrows resolved before terminal.draw)
+        let is_shell = self.is_shell;
+        let shell_mode_tag: u8 = match &self.mode {
+            ShellMode::Idle => 0,
+            ShellMode::Input => 1,
+            ShellMode::Running { .. } => 2,
+        };
+        let shell_input_chars: Vec<char> = self.input_buffer.chars().collect();
+        let shell_input_cursor = self.input_cursor;
+        let (shell_running_cmd, shell_running_elapsed) =
+            if let ShellMode::Running { command, started_at } = &self.mode {
+                let secs = started_at.elapsed().as_secs();
+                (Some(command.clone()), Some(format!("{:02}:{:02}", secs / 60, secs % 60)))
+            } else {
+                (None, None)
+            };
 
         self.terminal.draw(|frame| {
             let area = frame.area();
@@ -1056,96 +1237,163 @@ impl App {
             // ── Status bar (always visible) ───────────────────────────────────
             {
                 let bar_width = chunks[3].width as usize;
-
-                // Left: elapsed time or completion state
-                let (left_text, left_color) = match finished {
-                    Some((_, blocked)) if blocked > 0 => {
-                        (format!(" ⚠ {} step(s) blocked", blocked), Color::Yellow)
-                    }
-                    Some(_) => (" ✓ Phase complete".to_string(), Color::Green),
-                    None => {
-                        let secs = elapsed.as_secs();
-                        (format!(" {:02}:{:02}", secs / 60, secs % 60), Color::White)
-                    }
-                };
-
-                // Center: model name (or empty)
-                let center_text = model_name.as_deref().unwrap_or("").to_string();
-
-                // Right: keybindings
-                let right_text = if is_paused {
-                    "r:resume  q:stop "
-                } else {
-                    match finished {
-                        Some((_, blocked)) if blocked > 0 => "q:quit  r:retry ",
-                        Some(_) => "q:quit ",
-                        None => if dashboard.active_steps.len() > 1 {
-                            "q:stop  p:pause  Tab:focus  j/k:scroll  t:tracks "
-                        } else {
-                            "q:stop  p:pause  Tab:focus  j/k:scroll "
-                        },
-                    }
-                };
-
-                // Blocked steps indicator (shown during active execution)
-                let blocked_text = if finished.is_none() && dashboard.blocked_steps > 0 {
-                    format!("  {} blocked", dashboard.blocked_steps)
-                } else {
-                    String::new()
-                };
-
-                // Cost display (after elapsed time)
-                let (cost_text, cost_color) = match dashboard.cost {
-                    Some((spent, Some(limit))) => {
-                        let text = format!("  ${:.2}/${:.2}", spent, limit);
-                        let color = if spent >= limit {
-                            Color::Red
-                        } else if spent / limit >= 0.8 {
-                            Color::Yellow
-                        } else {
-                            Color::White
-                        };
-                        (text, color)
-                    }
-                    Some((spent, None)) => (format!("  ${:.2}", spent), Color::White),
-                    None => (String::new(), Color::White),
-                };
-
-                // BUG-23 fix: use display width, not char count
-                let left_len = left_text.width();
-                let blocked_len = blocked_text.width();
-                let cost_len = cost_text.width();
-                let center_len = center_text.width();
-                let right_len = right_text.width();
-                let total_left_len = left_len + blocked_len + cost_len;
-
-                // Padding: center the model name, right-align the keybindings
-                let left_pad = if center_len > 0 {
-                    bar_width.saturating_sub(total_left_len + center_len + right_len) / 2
-                } else {
-                    bar_width.saturating_sub(total_left_len + right_len)
-                };
-                let right_pad = bar_width.saturating_sub(total_left_len + left_pad + center_len + right_len);
-
                 let bar_style = Style::default().bg(Color::DarkGray).fg(Color::White);
-                let mut spans = vec![
-                    Span::styled(left_text, Style::default().bg(Color::DarkGray).fg(left_color)),
-                ];
-                if !blocked_text.is_empty() {
-                    spans.push(Span::styled(blocked_text, Style::default().bg(Color::DarkGray).fg(Color::Red)));
-                }
-                if !cost_text.is_empty() {
-                    spans.push(Span::styled(cost_text, Style::default().bg(Color::DarkGray).fg(cost_color)));
-                }
-                spans.push(Span::styled(" ".repeat(left_pad), bar_style));
-                if !center_text.is_empty() {
-                    spans.push(Span::styled(center_text, Style::default().bg(Color::DarkGray).fg(Color::Cyan)));
-                }
-                spans.push(Span::styled(" ".repeat(right_pad), bar_style));
-                spans.push(Span::styled(right_text, Style::default().bg(Color::DarkGray).fg(Color::White)));
 
-                let status_bar = Paragraph::new(Line::from(spans)).style(bar_style);
-                frame.render_widget(status_bar, chunks[3]);
+                if shell_mode_tag == 1 {
+                    // ── Input mode: command bar ───────────────────────────────
+                    let prompt = "> ";
+                    let right_text = "Enter:run  Esc:cancel ";
+                    let prompt_len = prompt.width();
+                    let right_len = right_text.width();
+
+                    let before: String = shell_input_chars[..shell_input_cursor.min(shell_input_chars.len())].iter().collect();
+                    let cursor_char = shell_input_chars.get(shell_input_cursor).copied();
+                    let after: String = if shell_input_cursor < shell_input_chars.len() {
+                        shell_input_chars[shell_input_cursor + 1..].iter().collect()
+                    } else {
+                        String::new()
+                    };
+
+                    // Width of the cursor cell (1 for normal char, 1 for the synthetic space at end)
+                    let cursor_width = cursor_char.map_or(1usize, |c| c.to_string().width());
+                    let content_width = prompt_len + before.width() + cursor_width + after.width();
+                    let pad_width = bar_width.saturating_sub(content_width + right_len);
+
+                    let mut spans: Vec<Span> = vec![
+                        Span::styled(prompt, Style::default().bg(Color::DarkGray).fg(Color::Cyan)),
+                        Span::styled(before, Style::default().bg(Color::DarkGray).fg(Color::White)),
+                    ];
+                    match cursor_char {
+                        Some(c) => {
+                            spans.push(Span::styled(
+                                c.to_string(),
+                                Style::default().bg(Color::White).fg(Color::Black),
+                            ));
+                            spans.push(Span::styled(after, Style::default().bg(Color::DarkGray).fg(Color::White)));
+                        }
+                        None => {
+                            spans.push(Span::styled(" ", Style::default().bg(Color::White).fg(Color::Black)));
+                        }
+                    }
+                    spans.push(Span::styled(" ".repeat(pad_width), bar_style));
+                    spans.push(Span::styled(right_text, Style::default().bg(Color::DarkGray).fg(Color::DarkGray)));
+
+                    let status_bar = Paragraph::new(Line::from(spans)).style(bar_style);
+                    frame.render_widget(status_bar, chunks[3]);
+
+                } else if shell_mode_tag == 2 {
+                    // ── Running mode: elapsed timer ───────────────────────────
+                    let cmd = shell_running_cmd.as_deref().unwrap_or("");
+                    let elapsed_str = shell_running_elapsed.as_deref().unwrap_or("00:00");
+                    let left_text = format!(" ▶ {} {}", cmd, elapsed_str);
+                    let right_text = "q:stop ";
+                    let left_len = left_text.width();
+                    let right_len = right_text.width();
+                    let pad = bar_width.saturating_sub(left_len + right_len);
+
+                    let spans = vec![
+                        Span::styled(left_text, Style::default().bg(Color::DarkGray).fg(Color::Yellow)),
+                        Span::styled(" ".repeat(pad), bar_style),
+                        Span::styled(right_text, Style::default().bg(Color::DarkGray).fg(Color::White)),
+                    ];
+                    let status_bar = Paragraph::new(Line::from(spans)).style(bar_style);
+                    frame.render_widget(status_bar, chunks[3]);
+
+                } else {
+                    // ── Idle / normal mode ────────────────────────────────────
+
+                    // Left: elapsed time or completion state
+                    let (left_text, left_color) = match finished {
+                        Some((_, blocked)) if blocked > 0 => {
+                            (format!(" ⚠ {} step(s) blocked", blocked), Color::Yellow)
+                        }
+                        Some(_) => (" ✓ Phase complete".to_string(), Color::Green),
+                        None => {
+                            let secs = elapsed.as_secs();
+                            (format!(" {:02}:{:02}", secs / 60, secs % 60), Color::White)
+                        }
+                    };
+
+                    // Center: model name (or empty)
+                    let center_text = model_name.as_deref().unwrap_or("").to_string();
+
+                    // Right: keybindings
+                    let right_text = if is_shell {
+                        // Interactive shell idle: prompt the user to type
+                        "type to enter command  q:quit "
+                    } else if is_paused {
+                        "r:resume  q:stop "
+                    } else {
+                        match finished {
+                            Some((_, blocked)) if blocked > 0 => "q:quit  r:retry ",
+                            Some(_) => "q:quit ",
+                            None => if dashboard.active_steps.len() > 1 {
+                                "q:stop  p:pause  Tab:focus  j/k:scroll  t:tracks "
+                            } else {
+                                "q:stop  p:pause  Tab:focus  j/k:scroll "
+                            },
+                        }
+                    };
+
+                    // Blocked steps indicator (shown during active execution)
+                    let blocked_text = if finished.is_none() && dashboard.blocked_steps > 0 {
+                        format!("  {} blocked", dashboard.blocked_steps)
+                    } else {
+                        String::new()
+                    };
+
+                    // Cost display (after elapsed time)
+                    let (cost_text, cost_color) = match dashboard.cost {
+                        Some((spent, Some(limit))) => {
+                            let text = format!("  ${:.2}/${:.2}", spent, limit);
+                            let color = if spent >= limit {
+                                Color::Red
+                            } else if spent / limit >= 0.8 {
+                                Color::Yellow
+                            } else {
+                                Color::White
+                            };
+                            (text, color)
+                        }
+                        Some((spent, None)) => (format!("  ${:.2}", spent), Color::White),
+                        None => (String::new(), Color::White),
+                    };
+
+                    // BUG-23 fix: use display width, not char count
+                    let left_len = left_text.width();
+                    let blocked_len = blocked_text.width();
+                    let cost_len = cost_text.width();
+                    let center_len = center_text.width();
+                    let right_len = right_text.width();
+                    let total_left_len = left_len + blocked_len + cost_len;
+
+                    // Padding: center the model name, right-align the keybindings
+                    let left_pad = if center_len > 0 {
+                        bar_width.saturating_sub(total_left_len + center_len + right_len) / 2
+                    } else {
+                        bar_width.saturating_sub(total_left_len + right_len)
+                    };
+                    let right_pad = bar_width.saturating_sub(total_left_len + left_pad + center_len + right_len);
+
+                    let mut spans = vec![
+                        Span::styled(left_text, Style::default().bg(Color::DarkGray).fg(left_color)),
+                    ];
+                    if !blocked_text.is_empty() {
+                        spans.push(Span::styled(blocked_text, Style::default().bg(Color::DarkGray).fg(Color::Red)));
+                    }
+                    if !cost_text.is_empty() {
+                        spans.push(Span::styled(cost_text, Style::default().bg(Color::DarkGray).fg(cost_color)));
+                    }
+                    spans.push(Span::styled(" ".repeat(left_pad), bar_style));
+                    if !center_text.is_empty() {
+                        spans.push(Span::styled(center_text, Style::default().bg(Color::DarkGray).fg(Color::Cyan)));
+                    }
+                    spans.push(Span::styled(" ".repeat(right_pad), bar_style));
+                    spans.push(Span::styled(right_text, Style::default().bg(Color::DarkGray).fg(Color::White)));
+
+                    let status_bar = Paragraph::new(Line::from(spans)).style(bar_style);
+                    frame.render_widget(status_bar, chunks[3]);
+                }
             }
         })?;
         Ok(())
