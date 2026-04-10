@@ -11,7 +11,7 @@ pub fn run_next(project_state: &state::ProjectState, sender: Option<&EventSender
         Some((phase_id, track_id, step_id)) => {
             events::emit(sender, &format!("Executing {}/{}/{}...", phase_id, track_id, step_id));
             run_step(project_state, &phase_id, &track_id, &step_id, sender, None)?;
-            if let Some(tx) = sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
+            if let Some(tx) = sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into(), track_id: None }); }
             let verify_passed = match verifier::run_step(project_state, &phase_id, &track_id, &step_id, sender) {
                 Ok(()) => true,
                 Err(e) => {
@@ -61,7 +61,7 @@ pub fn run_step(
     fs::write(&log_path, "")?;
 
     // Plan the track before executing the first step
-    if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── plan ──".into() }); }
+    if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── plan ──".into(), track_id: None }); }
     let plan_output = plan_track(project_state, phase_id, track_id, step_id, sender, worktree_dir)?;
     if let Some(output) = plan_output {
         append_to_log(&log_path, "--- track planning ---\n", &output);
@@ -116,7 +116,7 @@ pub fn run_step(
         opts = opts.cwd(dir.to_path_buf());
     }
 
-    if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── execute ──".into() }); }
+    if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── execute ──".into(), track_id: None }); }
     let step_output = claude::run(opts, sender);
     // Write step output to log even if it failed, and record the run
     match &step_output {
@@ -167,7 +167,7 @@ pub fn run_step(
     step_output?;
 
     // Summarize what was done before committing
-    if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── summarize ──".into() }); }
+    if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── summarize ──".into(), track_id: None }); }
     let summary_output = summarize_step(phase_id, track_id, step_id, sender, worktree_dir)?;
     append_to_log(&log_path, "--- summarization ---\n", &summary_output);
 

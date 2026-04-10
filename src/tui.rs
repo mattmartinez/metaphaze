@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, IsTerminal, Stdout};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -102,8 +102,12 @@ pub enum OutputLine {
 pub struct DashboardState {
     pub phase_id: String,
     pub tracks: Vec<TrackInfo>,
-    pub current_step: Option<StepInfo>,
+    pub active_steps: HashMap<String, StepInfo>,
     pub output_lines: VecDeque<OutputLine>,
+    pub output_buffers: HashMap<String, VecDeque<OutputLine>>,
+    pub partial_lines: HashMap<String, String>,
+    pub has_partials: HashMap<String, bool>,
+    pub active_track_focus: Option<String>,
     pub finished: Option<(usize, usize)>,
     pub scroll_offset: u16,
     pub user_scrolled: bool,
@@ -161,8 +165,12 @@ impl DashboardState {
         DashboardState {
             phase_id: phase_id.to_string(),
             tracks,
-            current_step: None,
+            active_steps: HashMap::new(),
             output_lines: VecDeque::new(),
+            output_buffers: HashMap::new(),
+            partial_lines: HashMap::new(),
+            has_partials: HashMap::new(),
+            active_track_focus: None,
             finished: None,
             scroll_offset: 0,
             user_scrolled: false,
@@ -218,6 +226,42 @@ impl DashboardState {
         }
     }
 
+    fn prefix_output_line(track_id: &str, line: OutputLine) -> OutputLine {
+        match line {
+            OutputLine::Plain(s) => OutputLine::Plain(format!("[{}] {}", track_id, s)),
+            OutputLine::Assistant(s) => OutputLine::Assistant(format!("[{}] {}", track_id, s)),
+            OutputLine::ToolUse(s) => OutputLine::ToolUse(format!("[{}] {}", track_id, s)),
+            OutputLine::ToolResult(s) => OutputLine::ToolResult(format!("[{}] {}", track_id, s)),
+            OutputLine::Label(s) => OutputLine::Label(format!("[{}] {}", track_id, s)),
+            OutputLine::Blocked(s) => OutputLine::Blocked(format!("[{}] {}", track_id, s)),
+        }
+    }
+
+    /// Push a completed line to a per-track buffer and to the global interleaved buffer with prefix.
+    fn push_to_track(&mut self, track_id: &str, line: OutputLine) {
+        let buf = self.output_buffers.entry(track_id.to_string()).or_default();
+        buf.push_back(line.clone());
+        while buf.len() > MAX_OUTPUT_LINES {
+            buf.pop_front();
+        }
+        let prefixed = Self::prefix_output_line(track_id, line);
+        self.output_lines.push_back(prefixed);
+    }
+
+    /// Finalize any in-progress partial line for a specific track.
+    fn flush_track_partial(&mut self, track_id: &str) {
+        if self.has_partials.get(track_id).copied().unwrap_or(false) {
+            if let Some(buf) = self.output_buffers.get_mut(track_id) {
+                buf.pop_back();
+            }
+            self.has_partials.insert(track_id.to_string(), false);
+        }
+        let partial = self.partial_lines.remove(track_id).unwrap_or_default();
+        if !partial.is_empty() {
+            self.push_to_track(track_id, OutputLine::Assistant(partial));
+        }
+    }
+
     pub fn update(&mut self, event: ProgressEvent) {
         match event {
             ProgressEvent::PhaseStarted => {}
@@ -230,7 +274,7 @@ impl DashboardState {
                 if let Some(t) = self.tracks.iter_mut().find(|t| t.id == track_id) {
                     t.status = TrackStatus::Active;
                 }
-                self.current_step = Some(StepInfo {
+                self.active_steps.insert(track_id.clone(), StepInfo {
                     track_id,
                     step_num,
                     total_steps,
@@ -238,16 +282,24 @@ impl DashboardState {
                 });
             }
 
-            ProgressEvent::StepCompleted { .. }
-            | ProgressEvent::StepFailed { .. }
-            | ProgressEvent::TrackCompleted { .. } => {
+            ProgressEvent::StepCompleted { track_id } => {
                 self.reload_tracks();
-                self.current_step = None;
+                self.active_steps.remove(&track_id);
             }
 
-            ProgressEvent::StepBlocked { step_id, reason, .. } => {
+            ProgressEvent::StepFailed { track_id } => {
                 self.reload_tracks();
-                self.current_step = None;
+                self.active_steps.remove(&track_id);
+            }
+
+            ProgressEvent::TrackCompleted { track_id } => {
+                self.reload_tracks();
+                self.active_steps.remove(&track_id);
+            }
+
+            ProgressEvent::StepBlocked { track_id, step_id, reason } => {
+                self.reload_tracks();
+                self.active_steps.remove(&track_id);
                 self.flush_partial();
                 self.blocked_steps += 1;
                 self.output_lines.push_back(OutputLine::Blocked(
@@ -255,56 +307,128 @@ impl DashboardState {
                 ));
             }
 
-            ProgressEvent::ClaudeOutput { line } => {
-                self.flush_partial();
-                self.output_lines.push_back(OutputLine::Plain(line));
-            }
-
-            ProgressEvent::AssistantText { text } => {
-                self.flush_partial();
-                self.output_lines.push_back(OutputLine::Assistant(text));
-            }
-
-            ProgressEvent::ToolUseStarted { tool } => {
-                self.flush_partial();
-                self.output_lines.push_back(OutputLine::ToolUse(tool));
-            }
-
-            ProgressEvent::ToolResultReceived { tool } => {
-                self.flush_partial();
-                self.output_lines.push_back(OutputLine::ToolResult(tool));
-            }
-
-            ProgressEvent::PhaseLabel { label } => {
-                self.flush_partial();
-                self.output_lines.push_back(OutputLine::Label(label));
-            }
-
-            ProgressEvent::TokenDelta { text } => {
-                let lines_before = self.output_lines.len();
-                if self.has_partial {
-                    self.output_lines.pop_back();
-                    self.has_partial = false;
+            ProgressEvent::ClaudeOutput { line, track_id } => {
+                match track_id {
+                    None => {
+                        self.flush_partial();
+                        self.output_lines.push_back(OutputLine::Plain(line));
+                    }
+                    Some(tid) => {
+                        self.flush_track_partial(&tid.clone());
+                        self.push_to_track(&tid, OutputLine::Plain(line));
+                    }
                 }
-                self.partial_line.push_str(&text);
-                while let Some(pos) = self.partial_line.find('\n') {
-                    let completed: String = self.partial_line.drain(..=pos).collect();
-                    let trimmed = completed.trim_end_matches('\n').to_string();
-                    self.output_lines.push_back(OutputLine::Assistant(trimmed));
+            }
+
+            ProgressEvent::AssistantText { text, track_id } => {
+                match track_id {
+                    None => {
+                        self.flush_partial();
+                        self.output_lines.push_back(OutputLine::Assistant(text));
+                    }
+                    Some(tid) => {
+                        self.flush_track_partial(&tid.clone());
+                        self.push_to_track(&tid, OutputLine::Assistant(text));
+                    }
                 }
-                if !self.partial_line.is_empty() {
-                    self.output_lines.push_back(OutputLine::Assistant(self.partial_line.clone()));
-                    self.has_partial = true;
+            }
+
+            ProgressEvent::ToolUseStarted { tool, track_id } => {
+                match track_id {
+                    None => {
+                        self.flush_partial();
+                        self.output_lines.push_back(OutputLine::ToolUse(tool));
+                    }
+                    Some(tid) => {
+                        self.flush_track_partial(&tid.clone());
+                        self.push_to_track(&tid, OutputLine::ToolUse(tool));
+                    }
                 }
-                stream_debug_log(&format!(
-                    "TokenDelta: text_len={} output_lines {} -> {} has_partial={}",
-                    text.len(), lines_before, self.output_lines.len(), self.has_partial
-                ));
+            }
+
+            ProgressEvent::ToolResultReceived { tool, track_id } => {
+                match track_id {
+                    None => {
+                        self.flush_partial();
+                        self.output_lines.push_back(OutputLine::ToolResult(tool));
+                    }
+                    Some(tid) => {
+                        self.flush_track_partial(&tid.clone());
+                        self.push_to_track(&tid, OutputLine::ToolResult(tool));
+                    }
+                }
+            }
+
+            ProgressEvent::PhaseLabel { label, track_id } => {
+                match track_id {
+                    None => {
+                        self.flush_partial();
+                        self.output_lines.push_back(OutputLine::Label(label));
+                    }
+                    Some(tid) => {
+                        self.flush_track_partial(&tid.clone());
+                        self.push_to_track(&tid, OutputLine::Label(label));
+                    }
+                }
+            }
+
+            ProgressEvent::TokenDelta { text, track_id } => {
+                match track_id {
+                    None => {
+                        let lines_before = self.output_lines.len();
+                        if self.has_partial {
+                            self.output_lines.pop_back();
+                            self.has_partial = false;
+                        }
+                        self.partial_line.push_str(&text);
+                        while let Some(pos) = self.partial_line.find('\n') {
+                            let completed: String = self.partial_line.drain(..=pos).collect();
+                            let trimmed = completed.trim_end_matches('\n').to_string();
+                            self.output_lines.push_back(OutputLine::Assistant(trimmed));
+                        }
+                        if !self.partial_line.is_empty() {
+                            self.output_lines.push_back(OutputLine::Assistant(self.partial_line.clone()));
+                            self.has_partial = true;
+                        }
+                        stream_debug_log(&format!(
+                            "TokenDelta: text_len={} output_lines {} -> {} has_partial={}",
+                            text.len(), lines_before, self.output_lines.len(), self.has_partial
+                        ));
+                    }
+                    Some(tid) => {
+                        // Pop the partial placeholder from the per-track buffer if present
+                        if self.has_partials.get(&tid).copied().unwrap_or(false) {
+                            if let Some(buf) = self.output_buffers.get_mut(&tid) {
+                                buf.pop_back();
+                            }
+                            self.has_partials.insert(tid.clone(), false);
+                        }
+                        let acc = self.partial_lines.entry(tid.clone()).or_default();
+                        acc.push_str(&text);
+                        // Extract complete lines
+                        let mut acc_owned = std::mem::take(acc);
+                        while let Some(pos) = acc_owned.find('\n') {
+                            let completed: String = acc_owned.drain(..=pos).collect();
+                            let trimmed = completed.trim_end_matches('\n').to_string();
+                            self.push_to_track(&tid, OutputLine::Assistant(trimmed));
+                        }
+                        if !acc_owned.is_empty() {
+                            // Push partial placeholder to per-track buffer only (not global)
+                            let buf = self.output_buffers.entry(tid.clone()).or_default();
+                            buf.push_back(OutputLine::Assistant(acc_owned.clone()));
+                            self.has_partials.insert(tid.clone(), true);
+                            self.partial_lines.insert(tid.clone(), acc_owned);
+                        } else {
+                            self.has_partials.insert(tid.clone(), false);
+                            self.partial_lines.insert(tid.clone(), String::new());
+                        }
+                    }
+                }
             }
 
             ProgressEvent::ExecutionFinished { completed, blocked } => {
                 self.finished = Some((completed, blocked));
-                self.current_step = None;
+                self.active_steps.clear();
             }
 
             ProgressEvent::ModelDetected { model } => {
@@ -514,6 +638,29 @@ where
                         }
                         Panel::Progress => {}
                     },
+                    KeyCode::Char('t') => {
+                        let track_ids: Vec<String> =
+                            app.dashboard.tracks.iter().map(|t| t.id.clone()).collect();
+                        app.dashboard.active_track_focus = if track_ids.is_empty() {
+                            None
+                        } else {
+                            match &app.dashboard.active_track_focus.clone() {
+                                None => Some(track_ids[0].clone()),
+                                Some(current) => {
+                                    let pos = track_ids.iter().position(|id| id == current);
+                                    match pos {
+                                        Some(i) if i + 1 < track_ids.len() => {
+                                            Some(track_ids[i + 1].clone())
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                            }
+                        };
+                        // Reset scroll when switching focus
+                        app.dashboard.scroll_offset = 0;
+                        app.dashboard.user_scrolled = false;
+                    }
                     _ => {}
                 }
             }
@@ -550,7 +697,8 @@ impl App {
         {
             let term_size = self.terminal.size()?;
             let track_height = (self.dashboard.tracks.len() as u16 + 2).max(4).min(8);
-            let middle_height = 4u16;
+            let active_count = self.dashboard.active_steps.len();
+            let middle_height = if active_count > 1 { (4u16 + active_count as u16).min(8) } else { 4u16 };
             let layout_chunks = Layout::vertical([
                 Constraint::Length(track_height),
                 Constraint::Length(middle_height),
@@ -561,7 +709,13 @@ impl App {
             let output_inner_width = layout_chunks[2].width.saturating_sub(2);
             let output_inner_height = layout_chunks[2].height.saturating_sub(2);
 
-            let visual_line_count: u16 = self.dashboard.output_lines.iter().map(|line| {
+            let visible_lines_ref: &VecDeque<OutputLine> =
+                if let Some(ref tid) = self.dashboard.active_track_focus {
+                    self.dashboard.output_buffers.get(tid.as_str()).unwrap_or(&self.dashboard.output_lines)
+                } else {
+                    &self.dashboard.output_lines
+                };
+            let visual_line_count: u16 = visible_lines_ref.iter().map(|line| {
                 let text = match line {
                     OutputLine::Plain(s) | OutputLine::Assistant(s) | OutputLine::Label(s) | OutputLine::Blocked(s) => s.clone(),
                     OutputLine::ToolUse(s) => format!("🔧 {}", s),
@@ -626,9 +780,11 @@ impl App {
 
             // Four vertical chunks: top=track overview, middle=step progress, bottom=output, footer=status bar
             let track_height = (tracks.len() as u16 + 2).max(4).min(8); // borders + content, capped at 8
+            let active_count = dashboard.active_steps.len();
+            let middle_height = if active_count > 1 { (4u16 + active_count as u16).min(8) } else { 4u16 };
             let chunks = Layout::vertical([
                 Constraint::Length(track_height),
-                Constraint::Length(4),
+                Constraint::Length(middle_height),
                 Constraint::Min(5),
                 Constraint::Length(1),
             ])
@@ -705,7 +861,11 @@ impl App {
                 let tracks_done =
                     tracks.iter().filter(|t| t.status == TrackStatus::Done).count();
                 let tracks_total = tracks.len();
-                let current_step = &dashboard.current_step;
+                let current_step = if dashboard.active_steps.len() == 1 {
+                    dashboard.active_steps.values().next()
+                } else {
+                    None
+                };
 
                 let progress_title = if is_paused { " Progress [PAUSED] " } else { " Progress " };
                 let progress_block = Block::bordered()
@@ -729,68 +889,122 @@ impl App {
                     let inner = progress_block.inner(chunks[1]);
                     frame.render_widget(progress_block, chunks[1]);
 
-                    let inner_chunks = Layout::vertical([
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                    ])
-                    .split(inner);
+                    if active_count > 1 {
+                        // Multi-track: one compact line per active track + aggregate gauge
+                        let mut sorted_steps: Vec<(&String, &StepInfo)> =
+                            dashboard.active_steps.iter().collect();
+                        sorted_steps.sort_by_key(|(k, _)| *k);
 
-                    // Line 1: step/track counter
-                    let step_line = match current_step {
-                        Some(step) => {
-                            let track_num = tracks
-                                .iter()
-                                .position(|t| t.id == step.track_id)
-                                .map(|i| i + 1)
-                                .unwrap_or(1)
-                                .min(tracks_total);
+                        let track_rows =
+                            sorted_steps.len().min((inner.height as usize).saturating_sub(1));
+                        let mut constraints: Vec<Constraint> =
+                            (0..track_rows).map(|_| Constraint::Length(1)).collect();
+                        constraints.push(Constraint::Length(1)); // gauge row
+                        let inner_chunks = Layout::vertical(constraints).split(inner);
+
+                        for (i, (tid, step)) in sorted_steps.iter().enumerate().take(track_rows) {
                             let elapsed = step.started_at.elapsed().as_secs();
-                            Line::from(vec![
-                                Span::styled(" Step ", Style::default().fg(Color::DarkGray)),
-                                Span::styled(
-                                    format!("{}/{}", step.step_num, step.total_steps),
-                                    Style::default().fg(Color::White),
-                                ),
-                                Span::styled("  Track ", Style::default().fg(Color::DarkGray)),
-                                Span::styled(
-                                    format!("{}/{}", track_num, tracks_total),
-                                    Style::default().fg(Color::White),
-                                ),
-                                Span::styled(
-                                    format!("  [{}m {:02}s]", elapsed / 60, elapsed % 60),
-                                    Style::default().fg(Color::DarkGray),
-                                ),
-                            ])
+                            let line_text = format!(
+                                " ▶ {} ST{:02}/{:02} [{}m {:02}s]",
+                                tid,
+                                step.step_num,
+                                step.total_steps,
+                                elapsed / 60,
+                                elapsed % 60
+                            );
+                            let line = Line::from(Span::styled(
+                                line_text,
+                                Style::default().fg(Color::Yellow),
+                            ));
+                            frame.render_widget(Paragraph::new(line), inner_chunks[i]);
                         }
-                        None => Line::from(Span::styled(
-                            " Idle",
-                            Style::default().fg(Color::DarkGray),
-                        )),
-                    };
-                    frame.render_widget(Paragraph::new(step_line), inner_chunks[0]);
 
-                    // Line 2: progress gauge
-                    let ratio = if all_steps_total > 0 {
-                        (all_steps_done as f64 / all_steps_total as f64).clamp(0.0, 1.0)
+                        // Aggregate gauge
+                        let ratio = if all_steps_total > 0 {
+                            (all_steps_done as f64 / all_steps_total as f64).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let gauge_label = format!("{}/{}", all_steps_done, all_steps_total);
+                        let gauge = Gauge::default()
+                            .ratio(ratio)
+                            .label(gauge_label)
+                            .gauge_style(Style::default().fg(Color::Green));
+                        frame.render_widget(gauge, inner_chunks[track_rows]);
                     } else {
-                        0.0
-                    };
-                    let gauge_label = format!("{}/{}", all_steps_done, all_steps_total);
-                    let gauge = Gauge::default()
-                        .ratio(ratio)
-                        .label(gauge_label)
-                        .gauge_style(Style::default().fg(Color::Green));
-                    frame.render_widget(gauge, inner_chunks[1]);
+                        // Single-track (or idle): existing rendering
+                        let inner_chunks = Layout::vertical([
+                            Constraint::Length(1),
+                            Constraint::Length(1),
+                        ])
+                        .split(inner);
+
+                        // Line 1: step/track counter
+                        let step_line = match current_step {
+                            Some(step) => {
+                                let track_num = tracks
+                                    .iter()
+                                    .position(|t| t.id == step.track_id)
+                                    .map(|i| i + 1)
+                                    .unwrap_or(1)
+                                    .min(tracks_total);
+                                let elapsed = step.started_at.elapsed().as_secs();
+                                Line::from(vec![
+                                    Span::styled(" Step ", Style::default().fg(Color::DarkGray)),
+                                    Span::styled(
+                                        format!("{}/{}", step.step_num, step.total_steps),
+                                        Style::default().fg(Color::White),
+                                    ),
+                                    Span::styled("  Track ", Style::default().fg(Color::DarkGray)),
+                                    Span::styled(
+                                        format!("{}/{}", track_num, tracks_total),
+                                        Style::default().fg(Color::White),
+                                    ),
+                                    Span::styled(
+                                        format!("  [{}m {:02}s]", elapsed / 60, elapsed % 60),
+                                        Style::default().fg(Color::DarkGray),
+                                    ),
+                                ])
+                            }
+                            None => Line::from(Span::styled(
+                                " Idle",
+                                Style::default().fg(Color::DarkGray),
+                            )),
+                        };
+                        frame.render_widget(Paragraph::new(step_line), inner_chunks[0]);
+
+                        // Line 2: progress gauge
+                        let ratio = if all_steps_total > 0 {
+                            (all_steps_done as f64 / all_steps_total as f64).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let gauge_label = format!("{}/{}", all_steps_done, all_steps_total);
+                        let gauge = Gauge::default()
+                            .ratio(ratio)
+                            .label(gauge_label)
+                            .gauge_style(Style::default().fg(Color::Green));
+                        frame.render_widget(gauge, inner_chunks[1]);
+                    }
                 }
             }
 
             // ── Bottom panel: Claude output ───────────────────────────────────
             {
+                let output_title = match &dashboard.active_track_focus {
+                    Some(tid) => format!(" Output [{}] ", tid),
+                    None => " Output ".to_string(),
+                };
                 let output_block = Block::bordered()
-                    .title(" Output ")
+                    .title(output_title)
                     .border_style(border_style(&Panel::Output));
-                let output_lines: Vec<Line> = dashboard
-                    .output_lines
+                let source_lines: &VecDeque<OutputLine> =
+                    if let Some(ref tid) = dashboard.active_track_focus {
+                        dashboard.output_buffers.get(tid.as_str()).unwrap_or(&dashboard.output_lines)
+                    } else {
+                        &dashboard.output_lines
+                    };
+                let output_lines: Vec<Line> = source_lines
                     .iter()
                     .map(|l| match l {
                         OutputLine::Plain(s) => Line::from(Span::raw(s.clone())),
@@ -865,7 +1079,11 @@ impl App {
                     match finished {
                         Some((_, blocked)) if blocked > 0 => "q:quit  r:retry ",
                         Some(_) => "q:quit ",
-                        None => "q:stop  p:pause  Tab:focus  j/k:scroll ",
+                        None => if dashboard.active_steps.len() > 1 {
+                            "q:stop  p:pause  Tab:focus  j/k:scroll  t:tracks "
+                        } else {
+                            "q:stop  p:pause  Tab:focus  j/k:scroll "
+                        },
                     }
                 };
 
@@ -948,8 +1166,12 @@ mod tests {
         DashboardState {
             phase_id: "test".into(),
             tracks: vec![],
-            current_step: None,
+            active_steps: HashMap::new(),
             output_lines: VecDeque::new(),
+            output_buffers: HashMap::new(),
+            partial_lines: HashMap::new(),
+            has_partials: HashMap::new(),
+            active_track_focus: None,
             finished: None,
             scroll_offset: 0,
             user_scrolled: false,
@@ -966,9 +1188,9 @@ mod tests {
     #[test]
     fn test_token_streaming_accumulation() {
         let mut d = make_dashboard();
-        d.update(ProgressEvent::TokenDelta { text: "Hello ".into() });
-        d.update(ProgressEvent::TokenDelta { text: "world\n".into() });
-        d.update(ProgressEvent::TokenDelta { text: "Line 2".into() });
+        d.update(ProgressEvent::TokenDelta { text: "Hello ".into(), track_id: None });
+        d.update(ProgressEvent::TokenDelta { text: "world\n".into(), track_id: None });
+        d.update(ProgressEvent::TokenDelta { text: "Line 2".into(), track_id: None });
 
         assert_eq!(d.output_lines.len(), 2);
         assert!(matches!(&d.output_lines[0], OutputLine::Assistant(s) if s == "Hello world"));
@@ -979,8 +1201,8 @@ mod tests {
     #[test]
     fn test_tool_use_then_result_pairing() {
         let mut d = make_dashboard();
-        d.update(ProgressEvent::ToolUseStarted { tool: "Read src/main.rs".into() });
-        d.update(ProgressEvent::ToolResultReceived { tool: "Read src/main.rs".into() });
+        d.update(ProgressEvent::ToolUseStarted { tool: "Read src/main.rs".into(), track_id: None });
+        d.update(ProgressEvent::ToolResultReceived { tool: "Read src/main.rs".into(), track_id: None });
 
         assert_eq!(d.output_lines.len(), 2);
         assert!(matches!(&d.output_lines[0], OutputLine::ToolUse(s) if s == "Read src/main.rs"));
@@ -997,12 +1219,87 @@ mod tests {
     #[test]
     fn test_partial_line_flush_on_non_delta_event() {
         let mut d = make_dashboard();
-        d.update(ProgressEvent::TokenDelta { text: "partial".into() });
-        d.update(ProgressEvent::ToolUseStarted { tool: "Bash ls".into() });
+        d.update(ProgressEvent::TokenDelta { text: "partial".into(), track_id: None });
+        d.update(ProgressEvent::ToolUseStarted { tool: "Bash ls".into(), track_id: None });
 
         assert!(!d.has_partial);
         assert_eq!(d.output_lines.len(), 2);
         assert!(matches!(&d.output_lines[0], OutputLine::Assistant(s) if s == "partial"));
         assert!(matches!(&d.output_lines[1], OutputLine::ToolUse(s) if s == "Bash ls"));
+    }
+
+    #[test]
+    fn test_multi_track_active_steps() {
+        let mut d = make_dashboard();
+
+        // Two tracks start simultaneously
+        d.update(ProgressEvent::StepStarted { track_id: "TR01".into(), step_num: 1, total_steps: 3 });
+        d.update(ProgressEvent::StepStarted { track_id: "TR02".into(), step_num: 1, total_steps: 2 });
+
+        assert_eq!(d.active_steps.len(), 2);
+        assert!(d.active_steps.contains_key("TR01"));
+        assert!(d.active_steps.contains_key("TR02"));
+
+        // Track-specific output goes to per-track buffers and global with prefix
+        d.update(ProgressEvent::AssistantText { text: "hello from TR01".into(), track_id: Some("TR01".into()) });
+        d.update(ProgressEvent::AssistantText { text: "hello from TR02".into(), track_id: Some("TR02".into()) });
+
+        assert_eq!(d.output_buffers.get("TR01").map(|b| b.len()), Some(1));
+        assert_eq!(d.output_buffers.get("TR02").map(|b| b.len()), Some(1));
+        assert_eq!(d.output_lines.len(), 2);
+        assert!(matches!(&d.output_lines[0], OutputLine::Assistant(s) if s.contains("[TR01]")));
+        assert!(matches!(&d.output_lines[1], OutputLine::Assistant(s) if s.contains("[TR02]")));
+
+        // TR01 completes — removed from active_steps
+        d.update(ProgressEvent::StepCompleted { track_id: "TR01".into() });
+        assert_eq!(d.active_steps.len(), 1);
+        assert!(!d.active_steps.contains_key("TR01"));
+        assert!(d.active_steps.contains_key("TR02"));
+
+        // ExecutionFinished clears remaining active steps
+        d.update(ProgressEvent::ExecutionFinished { completed: 2, blocked: 0 });
+        assert!(d.active_steps.is_empty());
+        assert!(d.finished.is_some());
+    }
+
+    #[test]
+    fn test_multi_track_progress_panel_state() {
+        let mut d = make_dashboard();
+
+        // Two tracks running concurrently
+        d.update(ProgressEvent::StepStarted { track_id: "TR01".into(), step_num: 2, total_steps: 4 });
+        d.update(ProgressEvent::StepStarted { track_id: "TR02".into(), step_num: 1, total_steps: 3 });
+
+        // Multi-track mode: two entries in active_steps
+        assert_eq!(d.active_steps.len(), 2);
+
+        let step1 = d.active_steps.get("TR01").unwrap();
+        assert_eq!(step1.step_num, 2);
+        assert_eq!(step1.total_steps, 4);
+        assert_eq!(step1.track_id, "TR01");
+
+        let step2 = d.active_steps.get("TR02").unwrap();
+        assert_eq!(step2.step_num, 1);
+        assert_eq!(step2.total_steps, 3);
+        assert_eq!(step2.track_id, "TR02");
+
+        // active_steps.len() > 1 means multi-track rendering path is used
+        // (panel height formula: min(4 + 2, 8) = 6)
+        let active_count = d.active_steps.len();
+        let expected_middle_height = if active_count > 1 { (4u16 + active_count as u16).min(8) } else { 4u16 };
+        assert_eq!(expected_middle_height, 6);
+
+        // Track focus on TR01 selects its per-track output buffer
+        d.active_track_focus = Some("TR01".into());
+        d.update(ProgressEvent::AssistantText { text: "tr01 output".into(), track_id: Some("TR01".into()) });
+        assert_eq!(d.output_buffers.get("TR01").map(|b| b.len()), Some(1));
+        assert_eq!(d.active_track_focus, Some("TR01".into()));
+
+        // After TR01 completes, only TR02 remains — single-track path resumes
+        d.update(ProgressEvent::StepCompleted { track_id: "TR01".into() });
+        assert_eq!(d.active_steps.len(), 1);
+        let active_count_after = d.active_steps.len();
+        let height_after = if active_count_after > 1 { (4u16 + active_count_after as u16).min(8) } else { 4u16 };
+        assert_eq!(height_after, 4);
     }
 }

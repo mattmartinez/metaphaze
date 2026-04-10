@@ -378,7 +378,7 @@ fn cmd_next_inner(
             let (completed, blocked) = match run_result {
                 Ok(()) => {
                     // BUG-1 fix: only verify when execution succeeded
-                    if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
+                    if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into(), track_id: None }); }
                     let verify_ok = match verifier::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
                         Ok(()) => true,
                         Err(e) => {
@@ -629,7 +629,7 @@ fn cmd_auto_inner(
                 }
 
                 // BUG-25 fix: verification failure blocks step completion
-                if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into() }); }
+                if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into(), track_id: None }); }
                 let verify_ok = match verifier::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref()) {
                     Ok(()) => true,
                     Err(e) => {
@@ -695,7 +695,7 @@ fn cmd_auto_inner(
                 let updated = state::load()?;
                 if updated.is_track_complete(&phase_id, &track_id) {
                     emit_output(&sender, &format!("Track {} complete. Running track verification...", track_id));
-                    if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify track ──".into() }); }
+                    if let Some(tx) = &sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify track ──".into(), track_id: None }); }
                     if let Err(e) = verifier::run_track(&updated, &phase_id, &track_id, sender.as_ref()) {
                         emit_output(&sender, &format!("Track verification issue: {}", e));
                     }

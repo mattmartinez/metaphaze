@@ -8,12 +8,12 @@ pub enum ProgressEvent {
     StepFailed { track_id: String },
     StepBlocked { track_id: String, step_id: String, reason: String },
     TrackCompleted { track_id: String },
-    ClaudeOutput { line: String },
-    AssistantText { text: String },
-    ToolUseStarted { tool: String },
-    ToolResultReceived { tool: String },
-    PhaseLabel { label: String },
-    TokenDelta { text: String },
+    ClaudeOutput { line: String, track_id: Option<String> },
+    AssistantText { text: String, track_id: Option<String> },
+    ToolUseStarted { tool: String, track_id: Option<String> },
+    ToolResultReceived { tool: String, track_id: Option<String> },
+    PhaseLabel { label: String, track_id: Option<String> },
+    TokenDelta { text: String, track_id: Option<String> },
     ModelDetected { model: String },
     ExecutionFinished { completed: usize, blocked: usize },
     PhaseTransition { from: String, to: String },
@@ -31,7 +31,7 @@ pub fn channel() -> (EventSender, EventReceiver) {
 /// Send a message to the TUI output panel, or print to stdout if no TUI.
 pub fn emit(sender: Option<&EventSender>, msg: &str) {
     if let Some(tx) = sender {
-        let _ = tx.send(ProgressEvent::ClaudeOutput { line: msg.to_string() });
+        let _ = tx.send(ProgressEvent::ClaudeOutput { line: msg.to_string(), track_id: None });
     } else {
         println!("{}", msg);
     }

@@ -187,6 +187,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                                     for line in text.lines() {
                                         let _ = tx.send(crate::events::ProgressEvent::AssistantText {
                                             text: line.to_string(),
+                                            track_id: None,
                                         });
                                     }
                                 }
@@ -203,6 +204,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                             if let Some(tx) = sender {
                                 let send_result = tx.send(crate::events::ProgressEvent::TokenDelta {
                                     text: text.clone(),
+                                    track_id: None,
                                 });
                                 match send_result {
                                     Ok(_) => dbg_token_send_ok += 1,
@@ -227,7 +229,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                         let summary = parsed.tool_use_summary().unwrap_or_else(|| tool.clone());
                         last_tool_summary = Some(summary.clone());
                         if let Some(tx) = sender {
-                            let _ = tx.send(crate::events::ProgressEvent::ToolUseStarted { tool: summary.clone() });
+                            let _ = tx.send(crate::events::ProgressEvent::ToolUseStarted { tool: summary.clone(), track_id: None });
                         } else {
                             eprintln!("  {} {}", "🔧".cyan(), summary.cyan());
                         }
@@ -236,7 +238,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                         dbg_tool_result += 1;
                         let result_tool = last_tool_summary.take().unwrap_or_else(|| tool.clone());
                         if let Some(tx) = sender {
-                            let _ = tx.send(crate::events::ProgressEvent::ToolResultReceived { tool: result_tool.clone() });
+                            let _ = tx.send(crate::events::ProgressEvent::ToolResultReceived { tool: result_tool.clone(), track_id: None });
                         } else {
                             eprintln!("  {} {}", "✓".dimmed(), result_tool.dimmed());
                         }
@@ -258,6 +260,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                         if let Some(tx) = sender {
                             let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput {
                                 line: "── done ──".to_string(),
+                                track_id: None,
                             });
                             // Emit live cost update: historical + current run
                             if let Ok(records) = crate::run_record::load_all() {
@@ -275,7 +278,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                         dbg_other_parsed += 1;
                         let msg = format!("⚠ {}", error);
                         if let Some(tx) = sender {
-                            let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: msg.clone() });
+                            let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput { line: msg.clone(), track_id: None });
                         } else {
                             eprintln!("  {} {}", "⚠".red(), error.red());
                         }
