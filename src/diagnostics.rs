@@ -237,8 +237,8 @@ pub fn check_state_integrity(state: &ProjectState) -> Vec<HealthIssue> {
                                     phase.id, track.id, step.id
                                 ),
                                 suggestion: format!(
-                                    "Create {}",
-                                    summary_path.display()
+                                    "Step may have been interrupted. Use mz reset {} --phase {} to re-run.",
+                                    step.id, phase.id
                                 ),
                             });
                         }
@@ -373,7 +373,7 @@ pub fn check_git_integrity(state: &ProjectState) -> Vec<HealthIssue> {
                     "Branch '{}' has no matching pending/in-progress track in state",
                     branch
                 ),
-                suggestion: format!("Delete the orphaned branch: git branch -d {}", branch),
+                suggestion: format!("Run: git branch -d {}", branch),
             });
         }
     }
@@ -467,7 +467,10 @@ pub fn check_artifacts(state: &ProjectState, phase_id: &str) -> Vec<HealthIssue>
                                 "SUMMARY.md missing for completed step {}/{}/{}",
                                 phase_id, track.id, step.id
                             ),
-                            suggestion: format!("Create {}", summary_path.display()),
+                            suggestion: format!(
+                                "Step may have been interrupted. Use mz reset {} --phase {} to re-run.",
+                                step.id, phase_id
+                            ),
                         });
                     }
                     // Check PLAN.md

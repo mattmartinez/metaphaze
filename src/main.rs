@@ -110,6 +110,9 @@ enum Commands {
         #[arg(long)]
         summary: bool,
     },
+
+    /// Audit project health — state integrity, git, and step diagnoses
+    Doctor,
 }
 
 #[derive(Subcommand)]
@@ -142,6 +145,7 @@ fn main() -> Result<()> {
         }
         Commands::Budget { action } => cmd_budget(action),
         Commands::Log { phase, track, failed, last, detail, summary } => cmd_log(phase, track, failed, last, detail, summary),
+        Commands::Doctor => cmd_doctor(),
     }
 }
 
@@ -1008,6 +1012,149 @@ fn cmd_log_summary(records: &[run_record::RunRecord]) -> Result<()> {
 fn cmd_status(detail: bool) -> Result<()> {
     let project_state = state::load()?;
     state::print_status(&project_state, detail)
+}
+
+fn cmd_doctor() -> Result<()> {
+    use colored::Colorize;
+
+    let project_state = state::load()?;
+    let records = run_record::load_all().unwrap_or_default();
+    let current_phase = project_state.current_phase().to_string();
+
+    println!("mz doctor — project health audit\n");
+
+    // Collect all health issues
+    let state_issues = diagnostics::check_state_integrity(&project_state);
+    let git_issues = diagnostics::check_git_integrity(&project_state);
+    let artifact_issues = diagnostics::check_artifacts(&project_state, &current_phase);
+    let step_diagnoses = diagnostics::diagnose_all_steps(&records, &project_state);
+
+    // ── State section ──────────────────────────────────────────────────
+    println!("State");
+    let all_state: Vec<_> = state_issues.iter().chain(artifact_issues.iter()).collect();
+    if all_state.is_empty() {
+        println!("  {}", "✓ All step statuses consistent".green());
+    } else {
+        for issue in &all_state {
+            let icon = match issue.severity {
+                diagnostics::Severity::Error => "✗".red(),
+                diagnostics::Severity::Warning => "!".yellow(),
+                diagnostics::Severity::Info => "i".blue(),
+            };
+            println!("  {} {}", icon, issue.description);
+            if !issue.suggestion.is_empty() {
+                println!("    {}", issue.suggestion.yellow());
+            }
+        }
+    }
+
+    // ── Git section ────────────────────────────────────────────────────
+    println!("\nGit");
+    if git_issues.is_empty() {
+        println!("  {}", "✓ Git state looks clean".green());
+    } else {
+        for issue in &git_issues {
+            let icon = match issue.severity {
+                diagnostics::Severity::Error => "✗".red(),
+                diagnostics::Severity::Warning => "!".yellow(),
+                diagnostics::Severity::Info => "i".blue(),
+            };
+            println!("  {} {}", icon, issue.description);
+            if !issue.suggestion.is_empty() {
+                println!("    {}", issue.suggestion.yellow());
+            }
+        }
+    }
+
+    // ── Steps section ──────────────────────────────────────────────────
+    println!("\nSteps (current phase: {})", current_phase);
+    if step_diagnoses.is_empty() {
+        println!("  {}", "✓ No troubled steps detected".green());
+    } else {
+        for diag in &step_diagnoses {
+            let label = match diag.issue {
+                diagnostics::StepIssue::VerifyOscillation => "Verify oscillation",
+                diagnostics::StepIssue::RepeatedExecFailure => "Repeated exec failure",
+                diagnostics::StepIssue::StaleInProgress => "Stale in-progress",
+                diagnostics::StepIssue::CostEscalation => "Cost escalation",
+                diagnostics::StepIssue::NoProgress => "No progress",
+            };
+            println!(
+                "  {} {}/{}: {} — {}, ${:.2} burned",
+                "✗".red(),
+                diag.track_id,
+                diag.step_id,
+                label,
+                diag.detail,
+                diag.cost_burned,
+            );
+            let suggestion = match diag.issue {
+                diagnostics::StepIssue::VerifyOscillation => format!(
+                    "Review the step plan's Truths section — the verification criteria may be unrealistic. Use mz steer to adjust, or mz reset {} to retry.",
+                    diag.step_id
+                ),
+                diagnostics::StepIssue::RepeatedExecFailure => format!(
+                    "Check the step's output log at .mz/phases/{}/{}/steps/{}-SUMMARY.md for the failure. Use mz reset {} to retry after fixing the underlying issue.",
+                    diag.phase_id, diag.track_id, diag.step_id, diag.step_id
+                ),
+                diagnostics::StepIssue::StaleInProgress => format!(
+                    "This step may be from a crashed session. Use mz reset {} to clear it.",
+                    diag.step_id
+                ),
+                diagnostics::StepIssue::CostEscalation => format!(
+                    "Review step plan complexity and reduce scope. Use mz reset {} to retry.",
+                    diag.step_id
+                ),
+                diagnostics::StepIssue::NoProgress => format!(
+                    "Manually inspect and reset the step. Use mz reset {} to retry.",
+                    diag.step_id
+                ),
+            };
+            println!("    {}", suggestion.yellow());
+        }
+    }
+
+    // ── Summary ────────────────────────────────────────────────────────
+    let error_count = all_state
+        .iter()
+        .filter(|i| matches!(i.severity, diagnostics::Severity::Error))
+        .count()
+        + step_diagnoses.len();
+    let warning_count = all_state
+        .iter()
+        .filter(|i| matches!(i.severity, diagnostics::Severity::Warning))
+        .count()
+        + git_issues
+            .iter()
+            .filter(|i| matches!(i.severity, diagnostics::Severity::Warning))
+            .count();
+    let info_count = git_issues
+        .iter()
+        .filter(|i| matches!(i.severity, diagnostics::Severity::Info))
+        .count();
+
+    println!();
+    let summary = format!(
+        "Summary: {} error{}, {} warning{}, {} info",
+        error_count,
+        if error_count == 1 { "" } else { "s" },
+        warning_count,
+        if warning_count == 1 { "" } else { "s" },
+        info_count,
+    );
+    if error_count > 0 {
+        println!("{}", summary.red());
+    } else if warning_count > 0 {
+        println!("{}", summary.yellow());
+    } else {
+        println!("{}", summary.green());
+    }
+
+    if error_count > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
 }
 
 fn cmd_steer(message: String) -> Result<()> {
