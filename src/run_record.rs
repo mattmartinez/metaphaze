@@ -41,6 +41,75 @@ pub fn append(record: &RunRecord) -> Result<()> {
     Ok(())
 }
 
+pub struct PhaseSummary {
+    pub phase_id: String,
+    pub runs: usize,
+    pub ok: usize,
+    pub err: usize,
+    pub cost_usd: f64,
+    pub duration_ms: u64,
+}
+
+pub struct TrackSummary {
+    pub phase_id: String,
+    pub track_id: String,
+    pub steps: usize,
+    pub runs: usize,
+    pub cost_usd: f64,
+    pub duration_ms: u64,
+}
+
+pub fn phase_summaries(records: &[RunRecord]) -> Vec<PhaseSummary> {
+    use std::collections::BTreeMap;
+    let mut map: BTreeMap<String, PhaseSummary> = BTreeMap::new();
+    for r in records {
+        let entry = map.entry(r.phase_id.clone()).or_insert(PhaseSummary {
+            phase_id: r.phase_id.clone(),
+            runs: 0,
+            ok: 0,
+            err: 0,
+            cost_usd: 0.0,
+            duration_ms: 0,
+        });
+        entry.runs += 1;
+        if r.outcome == "error" {
+            entry.err += 1;
+        } else {
+            entry.ok += 1;
+        }
+        entry.cost_usd += r.cost_usd.unwrap_or(0.0);
+        entry.duration_ms += r.duration_ms;
+    }
+    map.into_values().collect()
+}
+
+pub fn track_summaries(records: &[RunRecord]) -> Vec<TrackSummary> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut runs_map: BTreeMap<(String, String), TrackSummary> = BTreeMap::new();
+    let mut steps_map: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    for r in records {
+        let key = (r.phase_id.clone(), r.track_id.clone());
+        let entry = runs_map.entry(key.clone()).or_insert(TrackSummary {
+            phase_id: r.phase_id.clone(),
+            track_id: r.track_id.clone(),
+            steps: 0,
+            runs: 0,
+            cost_usd: 0.0,
+            duration_ms: 0,
+        });
+        entry.runs += 1;
+        entry.cost_usd += r.cost_usd.unwrap_or(0.0);
+        entry.duration_ms += r.duration_ms;
+        steps_map.entry(key).or_default().insert(r.step_id.clone());
+    }
+    for (key, summary) in runs_map.iter_mut() {
+        if let Some(steps) = steps_map.get(key) {
+            summary.steps = steps.len();
+        }
+    }
+    runs_map.into_values().collect()
+}
+
 pub fn load_all() -> Result<Vec<RunRecord>> {
     let path = ledger_path();
     if !path.exists() {

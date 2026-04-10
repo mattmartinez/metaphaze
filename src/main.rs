@@ -91,6 +91,9 @@ enum Commands {
         /// Show detailed output for each run
         #[arg(long)]
         detail: bool,
+        /// Show per-phase/track summary instead of individual runs
+        #[arg(long)]
+        summary: bool,
     },
 }
 
@@ -111,7 +114,7 @@ fn main() -> Result<()> {
             let phase_id = state::normalize_phase_id(&phase.unwrap_or_else(|| project_state.current_phase().to_string()));
             state::reset_step(&phase_id, &step_id)
         }
-        Commands::Log { phase, track, failed, last, detail } => cmd_log(phase, track, failed, last, detail),
+        Commands::Log { phase, track, failed, last, detail, summary } => cmd_log(phase, track, failed, last, detail, summary),
     }
 }
 
@@ -581,6 +584,7 @@ fn cmd_log(
     failed: bool,
     last: usize,
     detail: bool,
+    summary: bool,
 ) -> Result<()> {
     use chrono::{DateTime, Local, Utc};
     use colored::Colorize;
@@ -618,6 +622,15 @@ fn cmd_log(
         .collect();
 
     let filtered_total = records.len();
+
+    if records.is_empty() {
+        println!("No execution history.");
+        return Ok(());
+    }
+
+    if summary {
+        return cmd_log_summary(&records);
+    }
 
     // Take last N
     let skip = filtered_total.saturating_sub(last);
@@ -733,6 +746,64 @@ fn cmd_log(
         cost_footer,
         format_duration(total_ms),
     );
+
+    Ok(())
+}
+
+fn cmd_log_summary(records: &[run_record::RunRecord]) -> Result<()> {
+    let phases = run_record::phase_summaries(records);
+    let tracks = run_record::track_summaries(records);
+
+    // Phase summary table
+    let phase_w = 8;
+    let runs_w = 6;
+    let ok_w = 4;
+    let err_w = 5;
+    let cost_w = 10;
+    let time_w = 10;
+
+    println!(
+        "{:<phase_w$} {:>runs_w$} {:>ok_w$} {:>err_w$} {:>cost_w$} {:>time_w$}",
+        "PHASE", "RUNS", "OK", "ERR", "COST", "TIME",
+        phase_w = phase_w, runs_w = runs_w, ok_w = ok_w,
+        err_w = err_w, cost_w = cost_w, time_w = time_w,
+    );
+    let sep = phase_w + 1 + runs_w + 1 + ok_w + 1 + err_w + 1 + cost_w + 1 + time_w;
+    println!("{}", "─".repeat(sep));
+    for p in &phases {
+        let cost_str = format!("${:.4}", p.cost_usd);
+        println!(
+            "{:<phase_w$} {:>runs_w$} {:>ok_w$} {:>err_w$} {:>cost_w$} {:>time_w$}",
+            p.phase_id, p.runs, p.ok, p.err, cost_str, format_duration(p.duration_ms),
+            phase_w = phase_w, runs_w = runs_w, ok_w = ok_w,
+            err_w = err_w, cost_w = cost_w, time_w = time_w,
+        );
+    }
+    println!();
+
+    // Track summary table
+    let pt_w = 12;
+    let steps_w = 7;
+    let runs_w2 = 6;
+
+    println!(
+        "{:<pt_w$} {:>steps_w$} {:>runs_w2$} {:>cost_w$} {:>time_w$}",
+        "PHASE/TRACK", "STEPS", "RUNS", "COST", "TIME",
+        pt_w = pt_w, steps_w = steps_w, runs_w2 = runs_w2,
+        cost_w = cost_w, time_w = time_w,
+    );
+    let sep2 = pt_w + 1 + steps_w + 1 + runs_w2 + 1 + cost_w + 1 + time_w;
+    println!("{}", "─".repeat(sep2));
+    for t in &tracks {
+        let label = format!("{}/{}", t.phase_id, t.track_id);
+        let cost_str = format!("${:.4}", t.cost_usd);
+        println!(
+            "{:<pt_w$} {:>steps_w$} {:>runs_w2$} {:>cost_w$} {:>time_w$}",
+            label, t.steps, t.runs, cost_str, format_duration(t.duration_ms),
+            pt_w = pt_w, steps_w = steps_w, runs_w2 = runs_w2,
+            cost_w = cost_w, time_w = time_w,
+        );
+    }
 
     Ok(())
 }
