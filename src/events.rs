@@ -15,6 +15,7 @@ pub enum ProgressEvent {
     TokenDelta { text: String },
     ModelDetected { model: String },
     ExecutionFinished { completed: usize, blocked: usize },
+    PhaseTransition { from: String, to: String },
 }
 
 pub type EventSender = mpsc::Sender<ProgressEvent>;

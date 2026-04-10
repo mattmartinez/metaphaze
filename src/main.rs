@@ -502,8 +502,36 @@ fn cmd_auto_inner(
                 }
             }
             None => {
-                emit_output(&sender, "No pending steps. Phase complete or all remaining steps blocked.");
-                break;
+                let current_phase = project_state.current_phase().to_string();
+                if !project_state.is_phase_complete(&current_phase) {
+                    // Some steps are blocked — cannot advance.
+                    emit_output(&sender, "No pending steps. All remaining steps are blocked.");
+                    break;
+                }
+                // Phase is fully complete — try to advance to the next phase.
+                match project_state.next_phase_id() {
+                    Some(next_id) => {
+                        emit_output(
+                            &sender,
+                            &format!("Phase {} complete. Planning {}...", current_phase, next_id),
+                        );
+                        planner::run(&project_state, &next_id, sender.as_ref())?;
+                        state::advance_phase(&next_id)?;
+                        phase_started = false;
+                        if let Some(tx) = &sender {
+                            let _ = tx.send(events::ProgressEvent::PhaseTransition {
+                                from: current_phase.clone(),
+                                to: next_id.clone(),
+                            });
+                        }
+                        // project_state will be reloaded at the top of the next iteration
+                        continue;
+                    }
+                    None => {
+                        emit_output(&sender, "All phases complete!");
+                        break;
+                    }
+                }
             }
         }
     }

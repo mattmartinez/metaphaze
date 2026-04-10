@@ -153,6 +153,42 @@ impl ProjectState {
         }
     }
 
+    /// Returns the ID of the next phase after `current_phase`, lexicographically.
+    /// First looks in `self.phases`; if current phase is last, falls back to `.mz/ROADMAP.md`
+    /// to find phases not yet in state. Returns `None` if no next phase exists.
+    pub fn next_phase_id(&self) -> Option<String> {
+        let current = &self.current_phase;
+
+        // Collect all phase IDs from state, sorted lexicographically.
+        let mut state_ids: Vec<String> = self.phases.iter().map(|ph| ph.id.clone()).collect();
+        state_ids.sort();
+
+        // Find the next phase ID in state that is lexicographically greater than current.
+        if let Some(next) = state_ids.iter().find(|id| id.as_str() > current.as_str()) {
+            return Some(next.clone());
+        }
+
+        // No next phase in state — check ROADMAP.md for phases not yet in state.
+        let roadmap_path = mz_dir().join("ROADMAP.md");
+        if let Ok(content) = std::fs::read_to_string(&roadmap_path) {
+            let state_id_set: std::collections::HashSet<&str> =
+                self.phases.iter().map(|ph| ph.id.as_str()).collect();
+            // Parse roadmap phases and find the first one not in state that is > current.
+            let roadmap_phases = crate::planner::parse_roadmap(&content);
+            let mut roadmap_ids: Vec<String> = roadmap_phases
+                .into_iter()
+                .map(|p| p.id)
+                .filter(|id| !state_id_set.contains(id.as_str()) && id.as_str() > current.as_str())
+                .collect();
+            roadmap_ids.sort();
+            if let Some(first) = roadmap_ids.into_iter().next() {
+                return Some(first);
+            }
+        }
+
+        None
+    }
+
     pub fn stats(&self) -> (usize, usize, usize, usize) {
         let mut total = 0;
         let mut done = 0;

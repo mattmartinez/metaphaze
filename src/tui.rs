@@ -276,6 +276,15 @@ impl DashboardState {
             ProgressEvent::ModelDetected { model } => {
                 self.model = Some(model);
             }
+
+            ProgressEvent::PhaseTransition { from, to } => {
+                self.flush_partial();
+                self.phase_id = to.clone();
+                self.reload_tracks();
+                self.output_lines.push_back(OutputLine::Label(
+                    format!("━━━ Phase {} → {} ━━━", from, to),
+                ));
+            }
         }
 
         while self.output_lines.len() > MAX_OUTPUT_LINES {
