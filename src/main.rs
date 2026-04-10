@@ -113,22 +113,34 @@ fn cmd_discuss(phase: Option<String>) -> Result<()> {
 
 fn cmd_plan(phase: Option<String>, no_tui: bool) -> Result<()> {
     let project_state = state::load()?;
-    let phase_id = phase.unwrap_or_else(|| project_state.current_phase().to_string());
 
-    if !no_tui && tui::is_interactive() {
-        let pid = phase_id.clone();
-        let phase_id = std::sync::Arc::new(phase_id);
-        tui::run_with_tui_phase(project_state, Some(&pid), move |sender, stop, paused| {
-            cmd_plan_inner((*phase_id).clone(), sender, stop, paused)
-        })
+    if phase.is_none() {
+        // No phase arg — generate the multi-phase roadmap
+        if !no_tui && tui::is_interactive() {
+            tui::run_with_tui_phase(project_state, None, move |sender, stop, paused| {
+                cmd_plan_inner(None, sender, stop, paused)
+            })
+        } else {
+            println!("Generating roadmap...\n");
+            planner::generate_roadmap(&project_state, None)
+        }
     } else {
-        println!("Planning {}...\n", phase_id);
-        planner::run(&project_state, &phase_id, None)
+        let phase_id = phase.unwrap();
+        if !no_tui && tui::is_interactive() {
+            let pid = phase_id.clone();
+            let phase_id = std::sync::Arc::new(phase_id);
+            tui::run_with_tui_phase(project_state, Some(&pid), move |sender, stop, paused| {
+                cmd_plan_inner(Some((*phase_id).clone()), sender, stop, paused)
+            })
+        } else {
+            println!("Planning {}...\n", phase_id);
+            planner::run(&project_state, &phase_id, None)
+        }
     }
 }
 
 fn cmd_plan_inner(
-    phase_id: String,
+    phase_id: Option<String>,
     sender: Option<events::EventSender>,
     _stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     _paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -144,7 +156,10 @@ fn cmd_plan_inner(
         });
     }
 
-    let result = planner::run(&project_state, &phase_id, sender.as_ref());
+    let result = match phase_id {
+        None => planner::generate_roadmap(&project_state, sender.as_ref()),
+        Some(ref pid) => planner::run(&project_state, pid, sender.as_ref()),
+    };
 
     match result {
         Ok(()) => {

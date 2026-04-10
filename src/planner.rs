@@ -4,6 +4,65 @@ use std::fs;
 
 use crate::{claude, events, prompt, state};
 
+pub fn generate_roadmap(project_state: &state::ProjectState, sender: Option<&events::EventSender>) -> Result<()> {
+    let project_md = state::read_project_md()?;
+    let decisions = state::read_decisions()?;
+
+    // Build completed phases context string
+    let completed_ids = state::completed_phase_ids()?;
+    let state_snapshot = state::load()?;
+    let mut completed_phases = String::new();
+    for phase_id in &completed_ids {
+        let title = state_snapshot
+            .phases
+            .iter()
+            .find(|ph| &ph.id == phase_id)
+            .map(|ph| ph.title.as_str())
+            .unwrap_or("(unknown)");
+        completed_phases.push_str(&format!("## {} — {} [COMPLETED]\n", phase_id, title));
+    }
+
+    let mut vars = prompt::vars();
+    prompt::set(&mut vars, "project", &project_md);
+    prompt::set(&mut vars, "decisions", &decisions);
+    prompt::set(&mut vars, "completed_phases", &completed_phases);
+
+    let rendered = prompt::render(prompt::templates::PLAN_ROADMAP, &vars);
+
+    let sys_prompt = format!(
+        "You are a senior software architect creating a multi-phase roadmap for '{}'.",
+        project_state.name,
+    );
+
+    let opts = claude::ClaudeOptions::new(rendered)
+        .model("opus")
+        .max_turns(30)
+        .system_prompt(&sys_prompt);
+
+    events::emit(sender, "Generating roadmap...");
+    let result = claude::run(opts, sender)?;
+
+    // Write .mz/ROADMAP.md
+    let roadmap_path = state::roadmap_global_path();
+    if let Some(parent) = roadmap_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&roadmap_path, &result)?;
+
+    // Parse and create skeleton phases
+    let phases = parse_roadmap(&result);
+    let phase_count = phases.len();
+    for phase in phases {
+        state::create_skeleton_phase(&phase.id, &phase.title)?;
+    }
+
+    events::emit(
+        sender,
+        &format!("Roadmap written to .mz/ROADMAP.md — {} phases planned", phase_count),
+    );
+    Ok(())
+}
+
 pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&events::EventSender>) -> Result<()> {
     let project_md = state::read_project_md()?;
     let decisions = state::read_decisions()?;
@@ -275,6 +334,56 @@ pub(crate) fn parse_plan(plan_text: &str) -> Vec<ParsedTrack> {
     tracks
 }
 
+/// A parsed phase from a roadmap (before filesystem writes).
+pub(crate) struct ParsedPhase {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+}
+
+/// Parse a roadmap response into a list of non-completed phases.
+///
+/// Matches headings of the form `## PNNN — Title` (em-dash or hyphen).
+/// The description is all text between the heading and the next `## PNNN` heading (or end of
+/// string), trimmed. Phases whose title contains `[COMPLETED]` are filtered out. Phase IDs are
+/// normalized to uppercase (Decision 7).
+pub(crate) fn parse_roadmap(text: &str) -> Vec<ParsedPhase> {
+    let phase_re = match Regex::new(r"(?m)^## (P\d{3})\s*[—-]\s*(.+)$") {
+        Ok(r) => r,
+        Err(_) => return vec![],
+    };
+
+    let mut phases = vec![];
+    let matches: Vec<_> = phase_re.find_iter(text).collect();
+
+    for (i, m) in matches.iter().enumerate() {
+        let caps = match phase_re.captures(m.as_str()) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        let id = caps[1].to_uppercase();
+        let title = caps[2].trim().to_string();
+
+        // Filter out completed phases
+        if title.contains("[COMPLETED]") {
+            continue;
+        }
+
+        let heading_end = m.end();
+        let section_end = if i + 1 < matches.len() {
+            matches[i + 1].start()
+        } else {
+            text.len()
+        };
+        let description = text[heading_end..section_end].trim().to_string();
+
+        phases.push(ParsedPhase { id, title, description });
+    }
+
+    phases
+}
+
 /// Parse tracks and steps from plan output, write plan files to disk, return track entries.
 fn parse_and_write_tracks(phase_id: &str, plan_output: &str) -> Result<Vec<state::TrackEntry>> {
     let parsed_tracks = parse_plan(plan_output);
@@ -459,6 +568,81 @@ Implement mark_complete on ProjectState.
         let st02 = &track.steps[1];
         assert!(st02.content.contains("mark_complete works"));
         assert!(st02.content.contains("Implement mark_complete"));
+    }
+
+    #[test]
+    fn test_parse_roadmap_single_phase() {
+        let text = "## P001 — Bootstrap\n\nSet up the project skeleton.\n";
+        let phases = parse_roadmap(text);
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].id, "P001");
+        assert_eq!(phases[0].title, "Bootstrap");
+        assert_eq!(phases[0].description, "Set up the project skeleton.");
+    }
+
+    #[test]
+    fn test_parse_roadmap_multiple_phases() {
+        let text = "\
+## P001 — Bootstrap
+
+Initialize project.
+
+## P002 — Core Logic
+
+Build the engine.
+
+## P003 — Polish
+
+Final touches.
+";
+        let phases = parse_roadmap(text);
+        assert_eq!(phases.len(), 3);
+        assert_eq!(phases[0].id, "P001");
+        assert_eq!(phases[0].title, "Bootstrap");
+        assert!(phases[0].description.contains("Initialize project."));
+        assert_eq!(phases[1].id, "P002");
+        assert_eq!(phases[2].id, "P003");
+    }
+
+    #[test]
+    fn test_parse_roadmap_filters_completed() {
+        let text = "\
+## P001 — Bootstrap [COMPLETED]
+
+Done already.
+
+## P002 — Core Logic
+
+Still to do.
+";
+        let phases = parse_roadmap(text);
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].id, "P002");
+    }
+
+    #[test]
+    fn test_parse_roadmap_normalizes_id_to_uppercase() {
+        // Regex requires P\d{3} so lower-case 'p' won't match — normalization applies to the
+        // captured group only (e.g. if Claude emits "P001" we still uppercase to be safe).
+        let text = "## P001 — Title\n\nDesc.\n";
+        let phases = parse_roadmap(text);
+        assert_eq!(phases.len(), 1);
+        assert_eq!(phases[0].id, "P001"); // already uppercase, to_uppercase() is a no-op
+    }
+
+    #[test]
+    fn test_parse_roadmap_em_dash_and_hyphen() {
+        let text = "## P001 - Hyphen Title\n\n## P002 — Em-dash Title\n";
+        let phases = parse_roadmap(text);
+        assert_eq!(phases.len(), 2);
+        assert_eq!(phases[0].title, "Hyphen Title");
+        assert_eq!(phases[1].title, "Em-dash Title");
+    }
+
+    #[test]
+    fn test_parse_roadmap_empty_returns_empty() {
+        let phases = parse_roadmap("");
+        assert!(phases.is_empty());
     }
 }
 
