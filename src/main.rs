@@ -11,6 +11,7 @@ mod prompt;
 mod state;
 mod verifier;
 mod run_record;
+mod diagnostics;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
