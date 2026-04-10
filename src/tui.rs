@@ -96,6 +96,7 @@ pub enum OutputLine {
     ToolUse(String),
     ToolResult(String),
     Label(String),
+    Blocked(String),
 }
 
 pub struct DashboardState {
@@ -112,6 +113,7 @@ pub struct DashboardState {
     pub model: Option<String>,
     pub start_time: std::time::Instant,
     pub cost: Option<(f64, Option<f64>)>,
+    pub blocked_steps: usize,
 }
 
 impl DashboardState {
@@ -170,6 +172,7 @@ impl DashboardState {
             model: None,
             start_time: std::time::Instant::now(),
             cost: None,
+            blocked_steps: 0,
         }
     }
 
@@ -242,12 +245,13 @@ impl DashboardState {
                 self.current_step = None;
             }
 
-            ProgressEvent::StepBlocked { reason, .. } => {
+            ProgressEvent::StepBlocked { step_id, reason, .. } => {
                 self.reload_tracks();
                 self.current_step = None;
                 self.flush_partial();
-                self.output_lines.push_back(OutputLine::Label(
-                    format!("Blocked: {}", reason),
+                self.blocked_steps += 1;
+                self.output_lines.push_back(OutputLine::Blocked(
+                    format!("✗ {} blocked: {}", step_id, reason),
                 ));
             }
 
@@ -559,7 +563,7 @@ impl App {
 
             let visual_line_count: u16 = self.dashboard.output_lines.iter().map(|line| {
                 let text = match line {
-                    OutputLine::Plain(s) | OutputLine::Assistant(s) | OutputLine::Label(s) => s.clone(),
+                    OutputLine::Plain(s) | OutputLine::Assistant(s) | OutputLine::Label(s) | OutputLine::Blocked(s) => s.clone(),
                     OutputLine::ToolUse(s) => format!("🔧 {}", s),
                     OutputLine::ToolResult(s) => format!("  ✓ {}", s),
                 };
@@ -802,6 +806,10 @@ impl App {
                             format!("  ✓ {}", s),
                             Style::default().fg(Color::DarkGray),
                         )),
+                        OutputLine::Blocked(s) => Line::from(Span::styled(
+                            s.clone(),
+                            Style::default().fg(Color::Red),
+                        )),
                         OutputLine::Label(s) => {
                             let panel_width = chunks[2].width.saturating_sub(2);
                             let label = format!(" {} ", s);
@@ -861,6 +869,13 @@ impl App {
                     }
                 };
 
+                // Blocked steps indicator (shown during active execution)
+                let blocked_text = if finished.is_none() && dashboard.blocked_steps > 0 {
+                    format!("  {} blocked", dashboard.blocked_steps)
+                } else {
+                    String::new()
+                };
+
                 // Cost display (after elapsed time)
                 let (cost_text, cost_color) = match dashboard.cost {
                     Some((spent, Some(limit))) => {
@@ -880,10 +895,11 @@ impl App {
 
                 // BUG-23 fix: use display width, not char count
                 let left_len = left_text.width();
+                let blocked_len = blocked_text.width();
                 let cost_len = cost_text.width();
                 let center_len = center_text.width();
                 let right_len = right_text.width();
-                let total_left_len = left_len + cost_len;
+                let total_left_len = left_len + blocked_len + cost_len;
 
                 // Padding: center the model name, right-align the keybindings
                 let left_pad = if center_len > 0 {
@@ -897,6 +913,9 @@ impl App {
                 let mut spans = vec![
                     Span::styled(left_text, Style::default().bg(Color::DarkGray).fg(left_color)),
                 ];
+                if !blocked_text.is_empty() {
+                    spans.push(Span::styled(blocked_text, Style::default().bg(Color::DarkGray).fg(Color::Red)));
+                }
                 if !cost_text.is_empty() {
                     spans.push(Span::styled(cost_text, Style::default().bg(Color::DarkGray).fg(cost_color)));
                 }
@@ -940,6 +959,7 @@ mod tests {
             model: None,
             start_time: Instant::now(),
             cost: None,
+            blocked_steps: 0,
         }
     }
 
