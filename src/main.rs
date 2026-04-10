@@ -1,3 +1,4 @@
+mod budget;
 mod claude;
 mod discuss;
 mod events;
@@ -74,6 +75,12 @@ enum Commands {
         phase: Option<String>,
     },
 
+    /// Manage project spend budget
+    Budget {
+        #[command(subcommand)]
+        action: Option<BudgetAction>,
+    },
+
     /// Show execution history
     Log {
         /// Filter by phase (e.g. P008)
@@ -97,6 +104,17 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum BudgetAction {
+    /// Set the maximum USD spend limit
+    Set {
+        /// Budget limit in USD (e.g. 10.00)
+        amount: f64,
+    },
+    /// Remove the budget limit
+    Clear,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let no_tui = cli.no_tui;
@@ -114,8 +132,44 @@ fn main() -> Result<()> {
             let phase_id = state::normalize_phase_id(&phase.unwrap_or_else(|| project_state.current_phase().to_string()));
             state::reset_step(&phase_id, &step_id)
         }
+        Commands::Budget { action } => cmd_budget(action),
         Commands::Log { phase, track, failed, last, detail, summary } => cmd_log(phase, track, failed, last, detail, summary),
     }
+}
+
+fn cmd_budget(action: Option<BudgetAction>) -> Result<()> {
+    match action {
+        Some(BudgetAction::Set { amount }) => {
+            let mut config = budget::load()?;
+            config.max_usd = Some(amount);
+            budget::save(&config)?;
+            println!("Budget set to ${:.2}", amount);
+        }
+        Some(BudgetAction::Clear) => {
+            let mut config = budget::load()?;
+            config.max_usd = None;
+            budget::save(&config)?;
+            println!("Budget limit cleared.");
+        }
+        None => {
+            let config = budget::load()?;
+            let records = run_record::load_all()?;
+            let status = budget::check(&config, &records);
+            match (status.limit, status.remaining) {
+                (Some(limit), Some(remaining)) => {
+                    let pct_remaining = if limit > 0.0 { remaining / limit * 100.0 } else { 0.0 };
+                    println!(
+                        "Budget: ${:.2} / ${:.2} ({:.1}% remaining)",
+                        status.spent, limit, pct_remaining
+                    );
+                }
+                _ => {
+                    println!("Budget: ${:.2} spent (no limit set)", status.spent);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn cmd_init() -> Result<()> {
