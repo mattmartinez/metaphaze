@@ -247,6 +247,16 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                             let _ = tx.send(crate::events::ProgressEvent::ClaudeOutput {
                                 line: "── done ──".to_string(),
                             });
+                            // Emit live cost update: historical + current run
+                            if let Ok(records) = crate::run_record::load_all() {
+                                let historical = crate::run_record::total_project_cost(&records);
+                                let current = cost_usd.unwrap_or(0.0);
+                                let budget_cfg = crate::budget::load().unwrap_or_default();
+                                let _ = tx.send(crate::events::ProgressEvent::CostUpdate {
+                                    spent: historical + current,
+                                    limit: budget_cfg.max_usd,
+                                });
+                            }
                         }
                     }
                     Some(StreamEvent::Error { error }) => {

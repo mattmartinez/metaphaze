@@ -111,6 +111,7 @@ pub struct DashboardState {
     pub has_partial: bool,
     pub model: Option<String>,
     pub start_time: std::time::Instant,
+    pub cost: Option<(f64, Option<f64>)>,
 }
 
 impl DashboardState {
@@ -168,6 +169,7 @@ impl DashboardState {
             has_partial: false,
             model: None,
             start_time: std::time::Instant::now(),
+            cost: None,
         }
     }
 
@@ -310,6 +312,10 @@ impl DashboardState {
                 self.output_lines.push_back(OutputLine::Label(
                     format!("Budget exhausted: ${:.4} of ${:.4}", spent, limit),
                 ));
+            }
+
+            ProgressEvent::CostUpdate { spent, limit } => {
+                self.cost = Some((spent, limit));
             }
         }
 
@@ -846,24 +852,46 @@ impl App {
                     }
                 };
 
+                // Cost display (after elapsed time)
+                let (cost_text, cost_color) = match dashboard.cost {
+                    Some((spent, Some(limit))) => {
+                        let text = format!("  ${:.2}/${:.2}", spent, limit);
+                        let color = if spent >= limit {
+                            Color::Red
+                        } else if spent / limit >= 0.8 {
+                            Color::Yellow
+                        } else {
+                            Color::White
+                        };
+                        (text, color)
+                    }
+                    Some((spent, None)) => (format!("  ${:.2}", spent), Color::White),
+                    None => (String::new(), Color::White),
+                };
+
                 // BUG-23 fix: use display width, not char count
                 let left_len = left_text.width();
+                let cost_len = cost_text.width();
                 let center_len = center_text.width();
                 let right_len = right_text.width();
+                let total_left_len = left_len + cost_len;
 
                 // Padding: center the model name, right-align the keybindings
                 let left_pad = if center_len > 0 {
-                    bar_width.saturating_sub(left_len + center_len + right_len) / 2
+                    bar_width.saturating_sub(total_left_len + center_len + right_len) / 2
                 } else {
-                    bar_width.saturating_sub(left_len + right_len)
+                    bar_width.saturating_sub(total_left_len + right_len)
                 };
-                let right_pad = bar_width.saturating_sub(left_len + left_pad + center_len + right_len);
+                let right_pad = bar_width.saturating_sub(total_left_len + left_pad + center_len + right_len);
 
                 let bar_style = Style::default().bg(Color::DarkGray).fg(Color::White);
                 let mut spans = vec![
                     Span::styled(left_text, Style::default().bg(Color::DarkGray).fg(left_color)),
-                    Span::styled(" ".repeat(left_pad), bar_style),
                 ];
+                if !cost_text.is_empty() {
+                    spans.push(Span::styled(cost_text, Style::default().bg(Color::DarkGray).fg(cost_color)));
+                }
+                spans.push(Span::styled(" ".repeat(left_pad), bar_style));
                 if !center_text.is_empty() {
                     spans.push(Span::styled(center_text, Style::default().bg(Color::DarkGray).fg(Color::Cyan)));
                 }
@@ -902,6 +930,7 @@ mod tests {
             has_partial: false,
             model: None,
             start_time: Instant::now(),
+            cost: None,
         }
     }
 

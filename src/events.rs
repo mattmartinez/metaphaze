@@ -17,6 +17,7 @@ pub enum ProgressEvent {
     ExecutionFinished { completed: usize, blocked: usize },
     PhaseTransition { from: String, to: String },
     BudgetExhausted { spent: f64, limit: f64 },
+    CostUpdate { spent: f64, limit: Option<f64> },
 }
 
 pub type EventSender = mpsc::Sender<ProgressEvent>;
