@@ -169,6 +169,25 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                 match stream::parse_stream_line(&line) {
                     Some(StreamEvent::Assistant { message }) => {
                         dbg_other_parsed += 1;
+
+                        // Extract tool_use blocks — they live inside assistant.message.content
+                        // (not as top-level ToolUse events in -p mode)
+                        for block in &message.content {
+                            if let ContentBlock::ToolUse { name, input } = block {
+                                let summary = crate::stream::tool_use_summary_from_parts(name, input);
+                                last_tool_summary = Some(summary.clone());
+                                if let Some(tx) = sender {
+                                    let _ = tx.send(crate::events::ProgressEvent::ToolUseStarted {
+                                        tool: summary.clone(),
+                                        track_id: None,
+                                    });
+                                } else {
+                                    eprintln!("  {} {}", "🔧".cyan(), summary.cyan());
+                                }
+                            }
+                        }
+
+                        // Extract text blocks and send as AssistantText
                         let text: String = message.content.iter()
                             .filter_map(|block| {
                                 if let ContentBlock::Text { text } = block { Some(text.as_str()) } else { None }
@@ -177,13 +196,10 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                             .join("");
                         if !text.is_empty() {
                             if sender.is_none() {
-                                // Non-TUI: user already saw text token-by-token; just terminate the line
-                                eprintln!();
+                                eprintln!("{}", text.dimmed());
                             } else if !seen_token_deltas {
-                                // TUI fallback: CLI didn't emit content_block_delta events.
-                                // Send the assembled text line-by-line so the output panel shows it.
                                 if let Some(tx) = sender {
-                                    stream_debug_log("assistant fallback: sending assembled text via AssistantText");
+                                    stream_debug_log("assistant: sending text via AssistantText");
                                     for line in text.lines() {
                                         let _ = tx.send(crate::events::ProgressEvent::AssistantText {
                                             text: line.to_string(),
@@ -192,9 +208,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                                     }
                                 }
                             }
-                            // else: content already streamed token-by-token via TokenDelta
                         }
-                        // Reset per-turn flag so the next assistant turn is evaluated independently
                         seen_token_deltas = false;
                     }
                     Some(StreamEvent::ContentBlockDelta { ref delta }) => {

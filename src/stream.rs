@@ -122,6 +122,42 @@ impl StreamEvent {
     }
 }
 
+/// Standalone summary helper — same logic as `StreamEvent::tool_use_summary` but
+/// callable with just a name + input (used when tool_use blocks are extracted from
+/// inside `assistant.message.content` rather than as top-level events).
+pub fn tool_use_summary_from_parts(name: &str, input: &serde_json::Value) -> String {
+    let key_arg = match name {
+        "Read" | "Edit" | "Write" | "NotebookEdit" => {
+            input.get("file_path").and_then(|v| v.as_str()).map(|s| s.to_string())
+        }
+        "Bash" => {
+            input.get("command").and_then(|v| v.as_str()).map(|s| s.to_string())
+        }
+        "Grep" => {
+            input.get("path").and_then(|v| v.as_str()).map(|s| s.to_string())
+                .or_else(|| input.get("pattern").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        }
+        "Glob" => {
+            input.get("pattern").and_then(|v| v.as_str()).map(|s| s.to_string())
+                .or_else(|| input.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        }
+        _ => None,
+    };
+    let summary = match key_arg {
+        Some(arg) => {
+            let s = format!("{} {}", name, arg);
+            if s.chars().count() > 80 {
+                let truncated: String = s.chars().take(79).collect();
+                format!("{}…", truncated)
+            } else {
+                s
+            }
+        }
+        None => name.to_string(),
+    };
+    summary
+}
+
 /// The `message` field inside an `assistant` event.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AssistantMessage {
@@ -133,6 +169,12 @@ pub struct AssistantMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text { text: String },
+    ToolUse {
+        #[serde(rename = "name")]
+        name: String,
+        #[serde(default)]
+        input: serde_json::Value,
+    },
     #[serde(other)]
     Unknown,
 }
