@@ -107,12 +107,30 @@ pub fn commit_step(phase_id: &str, track_id: &str, step_id: &str, title: &str, c
     Ok(())
 }
 
-pub fn merge_track(phase_id: &str, track_id: &str) -> Result<()> {
-    let branch = format!("mz/{}/{}", phase_id, track_id);
+pub fn merge_track(phase_id: &str, track_id: &str, worktree_path: Option<&Path>) -> Result<()> {
+    // When a worktree path is provided, read the branch from that worktree.
+    // Otherwise derive it from the phase/track convention.
+    let branch = if let Some(wt) = worktree_path {
+        let out = Command::new("git")
+            .args(["-C", &wt.to_string_lossy(), "rev-parse", "--abbrev-ref", "HEAD"])
+            .output()
+            .context("Failed to get worktree branch")?;
+        if out.status.success() {
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        } else {
+            format!("mz/{}/{}", phase_id, track_id)
+        }
+    } else {
+        format!("mz/{}/{}", phase_id, track_id)
+    };
     let default = default_branch()?; // BUG-7 fix: detect default branch
 
-    let project_state = state::load()?;
-    let (track_title, step_bullets) = build_track_summary(&project_state, phase_id, track_id);
+    // State is only needed for the commit message body; fall back gracefully if unavailable.
+    let (track_title, step_bullets) = if let Ok(project_state) = state::load() {
+        build_track_summary(&project_state, phase_id, track_id)
+    } else {
+        (track_id.to_string(), String::new())
+    };
 
     // BUG-6 fix: check checkout exit status
     let output = Command::new("git")
@@ -349,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_worktree_create_remove_list() {
-        let _lock = CWD_LOCK.lock().unwrap();
+        let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = init_temp_repo();
         let p = dir.path();
 
@@ -404,9 +422,105 @@ mod tests {
         std::env::set_current_dir(original_dir).unwrap();
     }
 
+    /// TR01 and TR02 branches each get a commit; merge_track is called TR01 then TR02.
+    /// Git log (most-recent-first) should show TR02 merge before TR01 merge.
+    #[test]
+    fn test_merge_track_ordered() {
+        let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = init_temp_repo();
+        let p = dir.path();
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(p).unwrap();
+
+        // Detect the default branch ("main" or "master").
+        let default_br = if Command::new("git")
+            .args(["rev-parse", "--verify", "refs/heads/main"])
+            .current_dir(p)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        {
+            "main"
+        } else {
+            "master"
+        };
+
+        // Create mz/P001/TR01 branch with a commit.
+        Command::new("git")
+            .args(["checkout", "-b", "mz/P001/TR01"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        std::fs::write(p.join("tr01.txt"), "track 01").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(p).output().unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "TR01 work"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+
+        // Return to default branch and create mz/P001/TR02 branch with a commit.
+        Command::new("git")
+            .args(["checkout", default_br])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["checkout", "-b", "mz/P001/TR02"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        std::fs::write(p.join("tr02.txt"), "track 02").unwrap();
+        Command::new("git").args(["add", "."]).current_dir(p).output().unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "TR02 work"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+
+        // Return to default branch for merging.
+        Command::new("git")
+            .args(["checkout", default_br])
+            .current_dir(p)
+            .output()
+            .unwrap();
+
+        // Merge TR01 first, then TR02 — order must be deterministic regardless of completion order.
+        merge_track("P001", "TR01", None).expect("TR01 merge should succeed");
+        merge_track("P001", "TR02", None).expect("TR02 merge should succeed");
+
+        // Git log is most-recent-first: TR02 merge appears at a lower index than TR01 merge.
+        let log_out = Command::new("git")
+            .args(["log", "--oneline"])
+            .current_dir(p)
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log_out.stdout);
+        let lines: Vec<&str> = log.lines().collect();
+
+        let tr01_pos = lines
+            .iter()
+            .position(|l| l.contains("TR01"))
+            .expect("TR01 not found in git log");
+        let tr02_pos = lines
+            .iter()
+            .position(|l| l.contains("TR02"))
+            .expect("TR02 not found in git log");
+
+        assert!(
+            tr02_pos < tr01_pos,
+            "TR02 merge (index {}) should appear before TR01 merge (index {}) in git log (most-recent-first).\nLog:\n{}",
+            tr02_pos,
+            tr01_pos,
+            log
+        );
+
+        std::env::set_current_dir(original_dir).unwrap();
+    }
+
     #[test]
     fn test_remove_worktree_already_gone() {
-        let _lock = CWD_LOCK.lock().unwrap();
+        let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // remove_worktree on a non-existent path should not error.
         let dir = init_temp_repo();
         let p = dir.path();

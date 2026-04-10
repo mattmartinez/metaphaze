@@ -1,11 +1,37 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use anyhow::Result;
 
 use crate::{budget, diagnostics, events, events::EventSender, executor, git, run_record, state, verifier};
 use crate::state::{ProjectState, StepStatus};
+
+/// Ensures all worktrees in the list are removed when dropped.
+/// Used as a panic-safe cleanup guard — call `defuse()` after explicit cleanup.
+struct WorktreeGuard {
+    paths: Vec<PathBuf>,
+}
+
+impl WorktreeGuard {
+    fn new(paths: Vec<PathBuf>) -> Self {
+        WorktreeGuard { paths }
+    }
+
+    /// Clear the path list so Drop does nothing (call after explicit cleanup is done).
+    fn defuse(&mut self) {
+        self.paths.clear();
+    }
+}
+
+impl Drop for WorktreeGuard {
+    fn drop(&mut self) {
+        for path in &self.paths {
+            let _ = git::remove_worktree(path);
+        }
+    }
+}
 
 pub struct ParallelScheduler {
     pub sender: Option<EventSender>,
@@ -105,8 +131,14 @@ impl ParallelScheduler {
             });
         }
 
-        // Collect worktree paths for cleanup after joining.
-        let worktree_paths: Vec<PathBuf> = tasks.iter().map(|t| t.worktree_path.clone()).collect();
+        // Collect worktree paths keyed by track_id for merge lookup and cleanup.
+        let track_to_worktree: HashMap<String, PathBuf> = tasks
+            .iter()
+            .map(|t| (t.track_id.clone(), t.worktree_path.clone()))
+            .collect();
+
+        // Guard ensures all worktrees are cleaned up even if the merge loop panics.
+        let mut wt_guard = WorktreeGuard::new(track_to_worktree.values().cloned().collect());
 
         // Spawn one thread per track.
         let stop = Arc::clone(&self.stop);
@@ -311,27 +343,46 @@ impl ParallelScheduler {
         let phase_id = &updated_state.current_phase;
 
         for track_id in &tracks_finished {
-            if let Err(e) = git::merge_track(phase_id, track_id) {
+            let wt_path = track_to_worktree.get(track_id).map(PathBuf::as_path);
+            if let Err(e) = git::merge_track(phase_id, track_id, wt_path) {
                 events::emit(
                     self.sender.as_ref(),
                     &format!("Warning: merge failed for {}: {}", track_id, e),
                 );
+                // Mark all remaining pending steps blocked so user knows to reset and retry.
+                if let Ok(cur_state) = state::load() {
+                    if let Some(phase) = cur_state.phases.iter().find(|p| p.id == *phase_id) {
+                        if let Some(track) = phase.tracks.iter().find(|t| t.id == *track_id) {
+                            for step in &track.steps {
+                                if step.status == StepStatus::Pending {
+                                    let _ = state::mark_step_blocked(
+                                        phase_id,
+                                        track_id,
+                                        &step.id,
+                                        "Merge conflict after parallel execution",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        // Remove all worktrees regardless of outcome.
-        for wt_path in &worktree_paths {
+        // Explicit cleanup with event logging; defuse the guard to prevent double-cleanup.
+        for (track_id, wt_path) in &track_to_worktree {
             if let Err(e) = git::remove_worktree(wt_path) {
                 events::emit(
                     self.sender.as_ref(),
                     &format!(
-                        "Warning: failed to remove worktree {}: {}",
-                        wt_path.display(),
+                        "Warning: failed to remove worktree for {}: {}",
+                        track_id,
                         e
                     ),
                 );
             }
         }
+        wt_guard.defuse();
 
         Ok(BatchResult {
             completed: total_completed,

@@ -699,7 +699,7 @@ fn cmd_auto_inner(
                     if let Err(e) = verifier::run_track(&updated, &phase_id, &track_id, sender.as_ref()) {
                         emit_output(&sender, &format!("Track verification issue: {}", e));
                     }
-                    if let Err(e) = git::merge_track(&phase_id, &track_id) {
+                    if let Err(e) = git::merge_track(&phase_id, &track_id, None) {
                         emit_output(&sender, &format!("Git merge issue: {}", e));
                     }
                     if let Some(tx) = &sender {
