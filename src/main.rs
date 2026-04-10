@@ -8,6 +8,7 @@ mod executor;
 mod git;
 mod planner;
 mod prompt;
+mod scheduler;
 mod state;
 mod verifier;
 mod run_record;
@@ -524,6 +525,30 @@ fn cmd_auto_inner(
             phase_started = true;
             if let Some(tx) = &sender {
                 let _ = tx.send(events::ProgressEvent::PhaseStarted);
+            }
+        }
+
+        // Parallel path: if ≥ 2 tracks are runnable, dispatch a parallel batch.
+        {
+            let runnable = scheduler::runnable_tracks(&project_state);
+            if runnable.len() >= 2 {
+                let sched = scheduler::ParallelScheduler {
+                    sender: sender.clone(),
+                    stop: std::sync::Arc::clone(&stop),
+                    paused: std::sync::Arc::clone(&paused),
+                    max_budget_usd,
+                };
+                let batch = sched.run_parallel_batch()?;
+                completed += batch.completed;
+                blocked += batch.blocked;
+                for track_id in &batch.tracks_finished {
+                    if let Some(tx) = &sender {
+                        let _ = tx.send(events::ProgressEvent::TrackCompleted {
+                            track_id: track_id.clone(),
+                        });
+                    }
+                }
+                continue;
             }
         }
 
