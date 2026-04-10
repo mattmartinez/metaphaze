@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::fs;
 
-use crate::{claude, events::EventSender, prompt, state};
+use crate::{claude, events::EventSender, prompt, run_record, state};
 
 pub fn run_step(
     _project_state: &state::ProjectState,
@@ -31,7 +31,47 @@ pub fn run_step(
         .max_turns(30);
 
     println!("  Verifying {}/{}...", track_id, step_id);
-    let result = claude::run(opts, sender)?;
+    let verify_run = claude::run(opts, sender);
+    match &verify_run {
+        Ok(r) => {
+            let finished_at = chrono::Utc::now();
+            let started_at = finished_at - chrono::Duration::milliseconds(r.wall_clock_ms as i64);
+            run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: track_id.to_string(),
+                step_id: step_id.to_string(),
+                stage: "verify_step".to_string(),
+                model: r.model.clone(),
+                started_at: started_at.to_rfc3339(),
+                finished_at: finished_at.to_rfc3339(),
+                duration_ms: r.wall_clock_ms,
+                cost_usd: r.cost_usd,
+                num_turns: r.num_turns,
+                outcome: "success".to_string(),
+                error: None,
+            })?;
+        }
+        Err(e) => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: track_id.to_string(),
+                step_id: step_id.to_string(),
+                stage: "verify_step".to_string(),
+                model: String::new(),
+                started_at: now.clone(),
+                finished_at: now,
+                duration_ms: 0,
+                cost_usd: None,
+                num_turns: None,
+                outcome: "error".to_string(),
+                error: Some(e.to_string()),
+            });
+        }
+    }
+    let result = verify_run?.output;
 
     // Write verification result
     let verify_path = state::track_dir(phase_id, track_id)
@@ -93,7 +133,47 @@ pub fn run_track(
         .max_turns(40);
 
     println!("Running end-to-end track verification...");
-    let result = claude::run(opts, sender)?;
+    let track_verify_run = claude::run(opts, sender);
+    match &track_verify_run {
+        Ok(r) => {
+            let finished_at = chrono::Utc::now();
+            let started_at = finished_at - chrono::Duration::milliseconds(r.wall_clock_ms as i64);
+            run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: track_id.to_string(),
+                step_id: String::new(),
+                stage: "verify_track".to_string(),
+                model: r.model.clone(),
+                started_at: started_at.to_rfc3339(),
+                finished_at: finished_at.to_rfc3339(),
+                duration_ms: r.wall_clock_ms,
+                cost_usd: r.cost_usd,
+                num_turns: r.num_turns,
+                outcome: "success".to_string(),
+                error: None,
+            })?;
+        }
+        Err(e) => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: track_id.to_string(),
+                step_id: String::new(),
+                stage: "verify_track".to_string(),
+                model: String::new(),
+                started_at: now.clone(),
+                finished_at: now,
+                duration_ms: 0,
+                cost_usd: None,
+                num_turns: None,
+                outcome: "error".to_string(),
+                error: Some(e.to_string()),
+            });
+        }
+    }
+    let result = track_verify_run?.output;
 
     // Write track verification
     let verify_path = state::track_dir(phase_id, track_id).join("VERIFICATION.md");

@@ -2,7 +2,7 @@ use anyhow::Result;
 use regex::Regex;
 use std::fs;
 
-use crate::{claude, events, prompt, state};
+use crate::{claude, events, prompt, run_record, state};
 
 pub fn generate_roadmap(project_state: &state::ProjectState, sender: Option<&events::EventSender>) -> Result<()> {
     let project_md = state::read_project_md()?;
@@ -50,7 +50,47 @@ pub fn generate_roadmap(project_state: &state::ProjectState, sender: Option<&eve
         .system_prompt(&sys_prompt);
 
     events::emit(sender, "Generating roadmap...");
-    let result = claude::run(opts, sender)?;
+    let roadmap_run = claude::run(opts, sender);
+    match &roadmap_run {
+        Ok(r) => {
+            let finished_at = chrono::Utc::now();
+            let started_at = finished_at - chrono::Duration::milliseconds(r.wall_clock_ms as i64);
+            run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: String::new(),
+                track_id: String::new(),
+                step_id: String::new(),
+                stage: "roadmap".to_string(),
+                model: r.model.clone(),
+                started_at: started_at.to_rfc3339(),
+                finished_at: finished_at.to_rfc3339(),
+                duration_ms: r.wall_clock_ms,
+                cost_usd: r.cost_usd,
+                num_turns: r.num_turns,
+                outcome: "success".to_string(),
+                error: None,
+            })?;
+        }
+        Err(e) => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: String::new(),
+                track_id: String::new(),
+                step_id: String::new(),
+                stage: "roadmap".to_string(),
+                model: String::new(),
+                started_at: now.clone(),
+                finished_at: now,
+                duration_ms: 0,
+                cost_usd: None,
+                num_turns: None,
+                outcome: "error".to_string(),
+                error: Some(e.to_string()),
+            });
+        }
+    }
+    let result = roadmap_run?.output;
 
     // Write .mz/ROADMAP.md
     let roadmap_path = state::roadmap_global_path();
@@ -98,7 +138,47 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&
         .system_prompt(&sys_prompt);
 
     events::emit(sender, "Generating phase plan...");
-    let result = claude::run(opts, sender)?;
+    let phase_run = claude::run(opts, sender);
+    match &phase_run {
+        Ok(r) => {
+            let finished_at = chrono::Utc::now();
+            let started_at = finished_at - chrono::Duration::milliseconds(r.wall_clock_ms as i64);
+            run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: String::new(),
+                step_id: String::new(),
+                stage: "plan_phase".to_string(),
+                model: r.model.clone(),
+                started_at: started_at.to_rfc3339(),
+                finished_at: finished_at.to_rfc3339(),
+                duration_ms: r.wall_clock_ms,
+                cost_usd: r.cost_usd,
+                num_turns: r.num_turns,
+                outcome: "success".to_string(),
+                error: None,
+            })?;
+        }
+        Err(e) => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: String::new(),
+                step_id: String::new(),
+                stage: "plan_phase".to_string(),
+                model: String::new(),
+                started_at: now.clone(),
+                finished_at: now,
+                duration_ms: 0,
+                cost_usd: None,
+                num_turns: None,
+                outcome: "error".to_string(),
+                error: Some(e.to_string()),
+            });
+        }
+    }
+    let result = phase_run?.output;
 
     // Write ROADMAP.md
     let ph_dir = state::phase_dir(phase_id);
@@ -192,7 +272,47 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
         .system_prompt(&sys_prompt);
 
     events::emit(sender, "Re-planning remaining steps...");
-    let result = claude::run(opts, sender)?;
+    let replan_run = claude::run(opts, sender);
+    match &replan_run {
+        Ok(r) => {
+            let finished_at = chrono::Utc::now();
+            let started_at = finished_at - chrono::Duration::milliseconds(r.wall_clock_ms as i64);
+            run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: String::new(),
+                step_id: String::new(),
+                stage: "replan".to_string(),
+                model: r.model.clone(),
+                started_at: started_at.to_rfc3339(),
+                finished_at: finished_at.to_rfc3339(),
+                duration_ms: r.wall_clock_ms,
+                cost_usd: r.cost_usd,
+                num_turns: r.num_turns,
+                outcome: "success".to_string(),
+                error: None,
+            })?;
+        }
+        Err(e) => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: String::new(),
+                step_id: String::new(),
+                stage: "replan".to_string(),
+                model: String::new(),
+                started_at: now.clone(),
+                finished_at: now,
+                duration_ms: 0,
+                cost_usd: None,
+                num_turns: None,
+                outcome: "error".to_string(),
+                error: Some(e.to_string()),
+            });
+        }
+    }
+    let result = replan_run?.output;
 
     // Update ROADMAP.md with the re-plan
     let roadmap_content = format!(

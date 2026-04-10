@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
-use crate::{claude, events, events::EventSender, git, prompt, state, verifier};
+use crate::{claude, events, events::EventSender, git, prompt, run_record, state, verifier};
 
 /// Returns (completed: bool, blocked: bool) for TUI signaling
 pub fn run_next(project_state: &state::ProjectState, sender: Option<&EventSender>) -> Result<(bool, bool)> {
@@ -107,12 +107,49 @@ pub fn run_step(
 
     if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── execute ──".into() }); }
     let step_output = claude::run(opts, sender);
-    // Write step output to log even if it failed
+    // Write step output to log even if it failed, and record the run
     match &step_output {
-        Ok(output) => append_to_log(&log_path, "--- step execution ---\n", output),
-        Err(e) => append_to_log(&log_path, "--- step execution (failed) ---\n", &e.to_string()),
+        Ok(run_result) => {
+            append_to_log(&log_path, "--- step execution ---\n", &run_result.output);
+            let finished_at = chrono::Utc::now();
+            let started_at = finished_at - chrono::Duration::milliseconds(run_result.wall_clock_ms as i64);
+            run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: track_id.to_string(),
+                step_id: step_id.to_string(),
+                stage: "execute".to_string(),
+                model: run_result.model.clone(),
+                started_at: started_at.to_rfc3339(),
+                finished_at: finished_at.to_rfc3339(),
+                duration_ms: run_result.wall_clock_ms,
+                cost_usd: run_result.cost_usd,
+                num_turns: run_result.num_turns,
+                outcome: "success".to_string(),
+                error: None,
+            })?;
+        }
+        Err(e) => {
+            append_to_log(&log_path, "--- step execution (failed) ---\n", &e.to_string());
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: track_id.to_string(),
+                step_id: step_id.to_string(),
+                stage: "execute".to_string(),
+                model: String::new(),
+                started_at: now.clone(),
+                finished_at: now,
+                duration_ms: 0,
+                cost_usd: None,
+                num_turns: None,
+                outcome: "error".to_string(),
+                error: Some(e.to_string()),
+            });
+        }
     }
-    let _result = step_output?;
+    step_output?;
 
     // Summarize what was done before committing
     if let Some(tx) = sender { let _ = tx.send(crate::events::ProgressEvent::PhaseLabel { label: "── summarize ──".into() }); }
@@ -191,8 +228,47 @@ fn plan_track(
         .max_turns(30)
         .system_prompt(&sys_prompt);
 
-    let output = claude::run(opts, sender)?;
-    Ok(Some(output))
+    let plan_result = claude::run(opts, sender);
+    match &plan_result {
+        Ok(r) => {
+            let finished_at = chrono::Utc::now();
+            let started_at = finished_at - chrono::Duration::milliseconds(r.wall_clock_ms as i64);
+            run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: track_id.to_string(),
+                step_id: step_id.to_string(),
+                stage: "plan_track".to_string(),
+                model: r.model.clone(),
+                started_at: started_at.to_rfc3339(),
+                finished_at: finished_at.to_rfc3339(),
+                duration_ms: r.wall_clock_ms,
+                cost_usd: r.cost_usd,
+                num_turns: r.num_turns,
+                outcome: "success".to_string(),
+                error: None,
+            })?;
+        }
+        Err(e) => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: track_id.to_string(),
+                step_id: step_id.to_string(),
+                stage: "plan_track".to_string(),
+                model: String::new(),
+                started_at: now.clone(),
+                finished_at: now,
+                duration_ms: 0,
+                cost_usd: None,
+                num_turns: None,
+                outcome: "error".to_string(),
+                error: Some(e.to_string()),
+            });
+        }
+    }
+    Ok(Some(plan_result?.output))
 }
 
 fn summarize_step(phase_id: &str, track_id: &str, step_id: &str, sender: Option<&EventSender>) -> Result<String> {
@@ -218,7 +294,47 @@ fn summarize_step(phase_id: &str, track_id: &str, step_id: &str, sender: Option<
         .max_turns(20)
         .system_prompt(&sys_prompt);
 
-    claude::run(opts, sender)
+    let summarize_result = claude::run(opts, sender);
+    match &summarize_result {
+        Ok(r) => {
+            let finished_at = chrono::Utc::now();
+            let started_at = finished_at - chrono::Duration::milliseconds(r.wall_clock_ms as i64);
+            run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: track_id.to_string(),
+                step_id: step_id.to_string(),
+                stage: "summarize".to_string(),
+                model: r.model.clone(),
+                started_at: started_at.to_rfc3339(),
+                finished_at: finished_at.to_rfc3339(),
+                duration_ms: r.wall_clock_ms,
+                cost_usd: r.cost_usd,
+                num_turns: r.num_turns,
+                outcome: "success".to_string(),
+                error: None,
+            })?;
+        }
+        Err(e) => {
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ = run_record::append(&run_record::RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: phase_id.to_string(),
+                track_id: track_id.to_string(),
+                step_id: step_id.to_string(),
+                stage: "summarize".to_string(),
+                model: String::new(),
+                started_at: now.clone(),
+                finished_at: now,
+                duration_ms: 0,
+                cost_usd: None,
+                num_turns: None,
+                outcome: "error".to_string(),
+                error: Some(e.to_string()),
+            });
+        }
+    }
+    Ok(summarize_result?.output)
 }
 
 fn append_to_log(log_path: &std::path::Path, header: &str, content: &str) {

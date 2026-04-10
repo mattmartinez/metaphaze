@@ -19,6 +19,15 @@ fn stream_debug_log(msg: &str) {
     }
 }
 
+pub struct RunResult {
+    pub output: String,
+    pub cost_usd: Option<f64>,
+    pub duration_ms: Option<u64>,
+    pub num_turns: Option<u32>,
+    pub model: String,
+    pub wall_clock_ms: u64,
+}
+
 pub struct ClaudeOptions {
     pub prompt: String,
     pub model: Option<String>,
@@ -54,7 +63,8 @@ impl ClaudeOptions {
     }
 }
 
-pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> {
+pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResult> {
+    let start = std::time::Instant::now();
     let claude_bin = find_claude()?;
 
     let mut cmd = Command::new(&claude_bin);
@@ -117,6 +127,10 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
     let mut result_received = false;
     let mut fallback_lines: Vec<String> = Vec::new();
     let mut last_tool_summary: Option<String> = None;
+    let mut detected_model = String::new();
+    let mut run_cost: Option<f64> = None;
+    let mut run_duration: Option<u64> = None;
+    let mut run_turns: Option<u32> = None;
 
     // Diagnostic counters — written to /tmp/mz-stream-debug.log when MZ_STREAM_DEBUG is set.
     let mut dbg_lines_total: usize = 0;
@@ -213,10 +227,9 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                     }
                     Some(StreamEvent::Result { result, cost_usd, duration_ms, num_turns }) => {
                         dbg_other_parsed += 1;
-                        let run_cost = cost_usd;
-                        let run_duration = duration_ms;
-                        let run_turns = num_turns;
-                        let _ = (run_cost, run_duration, run_turns);
+                        run_cost = cost_usd;
+                        run_duration = duration_ms;
+                        run_turns = num_turns;
                         stdout = result;
                         result_received = true;
                         if let Some(tx) = sender {
@@ -236,6 +249,7 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
                     }
                     Some(StreamEvent::MessageStart { message }) => {
                         dbg_other_parsed += 1;
+                        detected_model = message.model.clone();
                         if let Some(tx) = sender {
                             let _ = tx.send(crate::events::ProgressEvent::ModelDetected {
                                 model: message.model.clone(),
@@ -283,7 +297,14 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<String> 
 
     crate::events::emit(sender, &format!("[claude] done, {} bytes", stdout.len()));
 
-    Ok(stdout)
+    Ok(RunResult {
+        output: stdout,
+        cost_usd: run_cost,
+        duration_ms: run_duration,
+        num_turns: run_turns,
+        model: detected_model,
+        wall_clock_ms: start.elapsed().as_millis() as u64,
+    })
 }
 
 /// Launch claude as an interactive session with a system prompt.
