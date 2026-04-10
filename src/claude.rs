@@ -1,6 +1,7 @@
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::Command;
 
 use crate::events::EventSender;
@@ -36,6 +37,7 @@ pub struct ClaudeOptions {
     pub max_turns: Option<u32>,
     pub allowed_tools: Vec<String>,
     pub append_system_prompt: Option<String>,
+    pub cwd: Option<PathBuf>,
 }
 
 impl ClaudeOptions {
@@ -46,6 +48,7 @@ impl ClaudeOptions {
             max_turns: Some(50),
             allowed_tools: vec![],
             append_system_prompt: None,
+            cwd: None,
         }
     }
 
@@ -61,6 +64,11 @@ impl ClaudeOptions {
 
     pub fn system_prompt(mut self, prompt: &str) -> Self {
         self.append_system_prompt = Some(prompt.to_string());
+        self
+    }
+
+    pub fn cwd(mut self, dir: PathBuf) -> Self {
+        self.cwd = Some(dir);
         self
     }
 }
@@ -90,6 +98,10 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
 
     for tool in &opts.allowed_tools {
         cmd.arg("--allowedTools").arg(tool);
+    }
+
+    if let Some(ref dir) = opts.cwd {
+        cmd.current_dir(dir);
     }
 
     // Log what we're about to run
@@ -400,4 +412,22 @@ fn is_shell_script(path: &std::path::Path) -> bool {
     std::fs::read(path)
         .map(|bytes| bytes.starts_with(b"#!"))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_claude_options_cwd_builder() {
+        let dir = PathBuf::from("/tmp/test-worktree");
+        let opts = ClaudeOptions::new("hello".to_string()).cwd(dir.clone());
+        assert_eq!(opts.cwd, Some(dir));
+    }
+
+    #[test]
+    fn test_claude_options_cwd_default_none() {
+        let opts = ClaudeOptions::new("hello".to_string());
+        assert!(opts.cwd.is_none());
+    }
 }
