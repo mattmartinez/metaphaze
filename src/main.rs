@@ -73,6 +73,25 @@ enum Commands {
         #[arg(long)]
         phase: Option<String>,
     },
+
+    /// Show execution history
+    Log {
+        /// Filter by phase (e.g. P008)
+        #[arg(long)]
+        phase: Option<String>,
+        /// Filter by track (e.g. TR01)
+        #[arg(long)]
+        track: Option<String>,
+        /// Show only failed runs
+        #[arg(long)]
+        failed: bool,
+        /// Show last N runs (default: 20)
+        #[arg(long, default_value = "20")]
+        last: usize,
+        /// Show detailed output for each run
+        #[arg(long)]
+        detail: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -92,6 +111,7 @@ fn main() -> Result<()> {
             let phase_id = state::normalize_phase_id(&phase.unwrap_or_else(|| project_state.current_phase().to_string()));
             state::reset_step(&phase_id, &step_id)
         }
+        Commands::Log { phase, track, failed, last, detail } => cmd_log(phase, track, failed, last, detail),
     }
 }
 
@@ -542,6 +562,178 @@ fn cmd_auto_inner(
     }
 
     emit_output(&sender, &format!("Completed {} steps.", completed));
+    Ok(())
+}
+
+fn format_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else if ms < 60_000 {
+        format!("{}s", ms / 1000)
+    } else {
+        format!("{}m {}s", ms / 60_000, (ms % 60_000) / 1000)
+    }
+}
+
+fn cmd_log(
+    phase: Option<String>,
+    track: Option<String>,
+    failed: bool,
+    last: usize,
+    detail: bool,
+) -> Result<()> {
+    use chrono::{DateTime, Local, Utc};
+    use colored::Colorize;
+
+    let all_records = run_record::load_all()?;
+    let total = all_records.len();
+
+    if total == 0 {
+        println!("No execution history.");
+        return Ok(());
+    }
+
+    // Apply filters
+    let phase_filter = phase.map(|p| state::normalize_phase_id(&p));
+    let track_filter = track.map(|t| t.to_uppercase());
+
+    let mut records: Vec<_> = all_records
+        .into_iter()
+        .filter(|r| {
+            if let Some(ref p) = phase_filter {
+                if r.phase_id != *p {
+                    return false;
+                }
+            }
+            if let Some(ref t) = track_filter {
+                if r.track_id != *t {
+                    return false;
+                }
+            }
+            if failed && r.outcome != "error" {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    let filtered_total = records.len();
+
+    // Take last N
+    let skip = filtered_total.saturating_sub(last);
+    records = records.into_iter().skip(skip).collect();
+
+    if records.is_empty() {
+        println!("No execution history.");
+        return Ok(());
+    }
+
+    // Compute totals for footer
+    let total_cost: f64 = records.iter().filter_map(|r| r.cost_usd).sum();
+    let total_ms: u64 = records.iter().map(|r| r.duration_ms).sum();
+
+    // Column widths
+    let time_w = 12;
+    let phase_w = 6;
+    let track_w = 6;
+    let step_w = 5;
+    let stage_w = 8;
+    let model_w = 10;
+    let dur_w = 8;
+    let cost_w = 8;
+    let status_w = 6;
+
+    // Header
+    println!(
+        "{:<time_w$} {:<phase_w$} {:<track_w$} {:<step_w$} {:<stage_w$} {:<model_w$} {:>dur_w$} {:>cost_w$} {:<status_w$}",
+        "TIME", "PHASE", "TRACK", "STEP", "STAGE", "MODEL", "DURATION", "COST", "STATUS",
+        time_w = time_w,
+        phase_w = phase_w,
+        track_w = track_w,
+        step_w = step_w,
+        stage_w = stage_w,
+        model_w = model_w,
+        dur_w = dur_w,
+        cost_w = cost_w,
+        status_w = status_w,
+    );
+
+    let sep_len = time_w + 1 + phase_w + 1 + track_w + 1 + step_w + 1 + stage_w + 1 + model_w + 1 + dur_w + 1 + cost_w + 1 + status_w;
+    println!("{}", "─".repeat(sep_len));
+
+    for record in &records {
+        // Parse time
+        let time_str = record
+            .finished_at
+            .parse::<DateTime<Utc>>()
+            .map(|dt| {
+                let local: DateTime<Local> = dt.into();
+                local.format("%b %d %H:%M").to_string()
+            })
+            .unwrap_or_else(|_| record.finished_at.chars().take(time_w).collect());
+
+        let dur_str = format_duration(record.duration_ms);
+
+        let cost_str = match record.cost_usd {
+            Some(c) => format!("${:.4}", c),
+            None => "-".to_string(),
+        };
+
+        let status_str = if record.outcome == "error" {
+            "ERR".red().to_string()
+        } else {
+            "ok".green().to_string()
+        };
+
+        // Truncate model to fit
+        let model_display: String = record.model.chars().take(model_w).collect();
+
+        println!(
+            "{:<time_w$} {:<phase_w$} {:<track_w$} {:<step_w$} {:<stage_w$} {:<model_w$} {:>dur_w$} {:>cost_w$} {}",
+            time_str,
+            record.phase_id,
+            record.track_id,
+            record.step_id,
+            record.stage,
+            model_display,
+            dur_str,
+            cost_str,
+            status_str,
+            time_w = time_w,
+            phase_w = phase_w,
+            track_w = track_w,
+            step_w = step_w,
+            stage_w = stage_w,
+            model_w = model_w,
+            dur_w = dur_w,
+            cost_w = cost_w,
+        );
+
+        if detail && record.outcome == "error" {
+            if let Some(ref err) = record.error {
+                for line in err.lines() {
+                    println!("    {}", line);
+                }
+            }
+        }
+    }
+
+    println!("{}", "─".repeat(sep_len));
+
+    let shown = records.len();
+    let cost_footer = if total_cost > 0.0 {
+        format!("${:.4}", total_cost)
+    } else {
+        "-".to_string()
+    };
+    println!(
+        "{} runs shown ({} total). Total cost: {}. Total time: {}.",
+        shown,
+        filtered_total,
+        cost_footer,
+        format_duration(total_ms),
+    );
+
     Ok(())
 }
 
