@@ -26,6 +26,8 @@ pub struct RunResult {
     pub num_turns: Option<u32>,
     pub model: String,
     pub wall_clock_ms: u64,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
 }
 
 pub struct ClaudeOptions {
@@ -131,6 +133,8 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
     let mut run_cost: Option<f64> = None;
     let mut run_duration: Option<u64> = None;
     let mut run_turns: Option<u32> = None;
+    let mut run_input_tokens: Option<u64> = None;
+    let mut run_output_tokens: Option<u64> = None;
 
     // Diagnostic counters — written to /tmp/mz-stream-debug.log when MZ_STREAM_DEBUG is set.
     let mut dbg_lines_total: usize = 0;
@@ -225,11 +229,18 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                             eprintln!("  {} {}", "✓".dimmed(), result_tool.dimmed());
                         }
                     }
-                    Some(StreamEvent::Result { result, cost_usd, duration_ms, num_turns }) => {
+                    Some(StreamEvent::Result { result, cost_usd, duration_ms, num_turns, input_tokens, output_tokens }) => {
                         dbg_other_parsed += 1;
                         run_cost = cost_usd;
                         run_duration = duration_ms;
                         run_turns = num_turns;
+                        // Prefer Result-level token counts; they'll override MessageStart values
+                        if input_tokens.is_some() {
+                            run_input_tokens = input_tokens;
+                        }
+                        if output_tokens.is_some() {
+                            run_output_tokens = output_tokens;
+                        }
                         stdout = result;
                         result_received = true;
                         if let Some(tx) = sender {
@@ -250,6 +261,15 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                     Some(StreamEvent::MessageStart { message }) => {
                         dbg_other_parsed += 1;
                         detected_model = message.model.clone();
+                        // Capture initial token usage from MessageStart as fallback
+                        if let Some(usage) = &message.usage {
+                            if run_input_tokens.is_none() {
+                                run_input_tokens = usage.input_tokens;
+                            }
+                            if run_output_tokens.is_none() {
+                                run_output_tokens = usage.output_tokens;
+                            }
+                        }
                         if let Some(tx) = sender {
                             let _ = tx.send(crate::events::ProgressEvent::ModelDetected {
                                 model: message.model.clone(),
@@ -304,6 +324,8 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
         num_turns: run_turns,
         model: detected_model,
         wall_clock_ms: start.elapsed().as_millis() as u64,
+        input_tokens: run_input_tokens,
+        output_tokens: run_output_tokens,
     })
 }
 

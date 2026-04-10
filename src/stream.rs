@@ -35,6 +35,10 @@ pub enum StreamEvent {
         duration_ms: Option<u64>,
         #[serde(default)]
         num_turns: Option<u32>,
+        #[serde(default)]
+        input_tokens: Option<u64>,
+        #[serde(default)]
+        output_tokens: Option<u64>,
     },
     /// An error occurred during the run.
     Error {
@@ -146,6 +150,16 @@ pub enum DeltaContent {
 #[derive(Debug, Clone, Deserialize)]
 pub struct MessageStartData {
     pub model: String,
+    #[serde(default)]
+    pub usage: Option<Usage>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Usage {
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
 }
 
 /// Parse a single NDJSON line from the stream-json output.
@@ -215,7 +229,7 @@ mod tests {
     fn test_result_event_still_parses() {
         let line = r#"{"type":"result","result":"final answer","cost_usd":0.01,"duration_ms":1200,"num_turns":3}"#;
         let event = parse_stream_line(line).expect("should parse");
-        if let StreamEvent::Result { result, cost_usd, duration_ms, num_turns } = event {
+        if let StreamEvent::Result { result, cost_usd, duration_ms, num_turns, .. } = event {
             assert_eq!(result, "final answer");
             assert_eq!(cost_usd, Some(0.01));
             assert_eq!(duration_ms, Some(1200));

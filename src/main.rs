@@ -578,6 +578,22 @@ fn format_duration(ms: u64) -> String {
     }
 }
 
+fn format_tokens(input: Option<u64>, output: Option<u64>) -> String {
+    match (input, output) {
+        (None, None) => "-".to_string(),
+        (i, o) => {
+            let fmt = |n: Option<u64>| -> String {
+                match n {
+                    None => "-".to_string(),
+                    Some(v) if v >= 1000 => format!("{:.1}k", v as f64 / 1000.0),
+                    Some(v) => format!("{}", v),
+                }
+            };
+            format!("{}→{}", fmt(i), fmt(o))
+        }
+    }
+}
+
 fn cmd_log(
     phase: Option<String>,
     track: Option<String>,
@@ -654,12 +670,13 @@ fn cmd_log(
     let model_w = 10;
     let dur_w = 8;
     let cost_w = 8;
+    let tokens_w = 12;
     let status_w = 6;
 
     // Header
     println!(
-        "{:<time_w$} {:<phase_w$} {:<track_w$} {:<step_w$} {:<stage_w$} {:<model_w$} {:>dur_w$} {:>cost_w$} {:<status_w$}",
-        "TIME", "PHASE", "TRACK", "STEP", "STAGE", "MODEL", "DURATION", "COST", "STATUS",
+        "{:<time_w$} {:<phase_w$} {:<track_w$} {:<step_w$} {:<stage_w$} {:<model_w$} {:>dur_w$} {:>cost_w$} {:>tokens_w$} {:<status_w$}",
+        "TIME", "PHASE", "TRACK", "STEP", "STAGE", "MODEL", "DURATION", "COST", "TOKENS", "STATUS",
         time_w = time_w,
         phase_w = phase_w,
         track_w = track_w,
@@ -668,10 +685,11 @@ fn cmd_log(
         model_w = model_w,
         dur_w = dur_w,
         cost_w = cost_w,
+        tokens_w = tokens_w,
         status_w = status_w,
     );
 
-    let sep_len = time_w + 1 + phase_w + 1 + track_w + 1 + step_w + 1 + stage_w + 1 + model_w + 1 + dur_w + 1 + cost_w + 1 + status_w;
+    let sep_len = time_w + 1 + phase_w + 1 + track_w + 1 + step_w + 1 + stage_w + 1 + model_w + 1 + dur_w + 1 + cost_w + 1 + tokens_w + 1 + status_w;
     println!("{}", "─".repeat(sep_len));
 
     for record in &records {
@@ -692,6 +710,8 @@ fn cmd_log(
             None => "-".to_string(),
         };
 
+        let tokens_str = format_tokens(record.input_tokens, record.output_tokens);
+
         let status_str = if record.outcome == "error" {
             "ERR".red().to_string()
         } else {
@@ -702,7 +722,7 @@ fn cmd_log(
         let model_display: String = record.model.chars().take(model_w).collect();
 
         println!(
-            "{:<time_w$} {:<phase_w$} {:<track_w$} {:<step_w$} {:<stage_w$} {:<model_w$} {:>dur_w$} {:>cost_w$} {}",
+            "{:<time_w$} {:<phase_w$} {:<track_w$} {:<step_w$} {:<stage_w$} {:<model_w$} {:>dur_w$} {:>cost_w$} {:>tokens_w$} {}",
             time_str,
             record.phase_id,
             record.track_id,
@@ -711,6 +731,7 @@ fn cmd_log(
             model_display,
             dur_str,
             cost_str,
+            tokens_str,
             status_str,
             time_w = time_w,
             phase_w = phase_w,
@@ -720,6 +741,7 @@ fn cmd_log(
             model_w = model_w,
             dur_w = dur_w,
             cost_w = cost_w,
+            tokens_w = tokens_w,
         );
 
         if detail && record.outcome == "error" {
@@ -761,22 +783,27 @@ fn cmd_log_summary(records: &[run_record::RunRecord]) -> Result<()> {
     let err_w = 5;
     let cost_w = 10;
     let time_w = 10;
+    let tokens_w = 14;
 
     println!(
-        "{:<phase_w$} {:>runs_w$} {:>ok_w$} {:>err_w$} {:>cost_w$} {:>time_w$}",
-        "PHASE", "RUNS", "OK", "ERR", "COST", "TIME",
+        "{:<phase_w$} {:>runs_w$} {:>ok_w$} {:>err_w$} {:>cost_w$} {:>time_w$} {:>tokens_w$}",
+        "PHASE", "RUNS", "OK", "ERR", "COST", "TIME", "TOKENS",
         phase_w = phase_w, runs_w = runs_w, ok_w = ok_w,
-        err_w = err_w, cost_w = cost_w, time_w = time_w,
+        err_w = err_w, cost_w = cost_w, time_w = time_w, tokens_w = tokens_w,
     );
-    let sep = phase_w + 1 + runs_w + 1 + ok_w + 1 + err_w + 1 + cost_w + 1 + time_w;
+    let sep = phase_w + 1 + runs_w + 1 + ok_w + 1 + err_w + 1 + cost_w + 1 + time_w + 1 + tokens_w;
     println!("{}", "─".repeat(sep));
     for p in &phases {
         let cost_str = format!("${:.4}", p.cost_usd);
+        let tokens_str = format_tokens(
+            if p.input_tokens > 0 { Some(p.input_tokens) } else { None },
+            if p.output_tokens > 0 { Some(p.output_tokens) } else { None },
+        );
         println!(
-            "{:<phase_w$} {:>runs_w$} {:>ok_w$} {:>err_w$} {:>cost_w$} {:>time_w$}",
-            p.phase_id, p.runs, p.ok, p.err, cost_str, format_duration(p.duration_ms),
+            "{:<phase_w$} {:>runs_w$} {:>ok_w$} {:>err_w$} {:>cost_w$} {:>time_w$} {:>tokens_w$}",
+            p.phase_id, p.runs, p.ok, p.err, cost_str, format_duration(p.duration_ms), tokens_str,
             phase_w = phase_w, runs_w = runs_w, ok_w = ok_w,
-            err_w = err_w, cost_w = cost_w, time_w = time_w,
+            err_w = err_w, cost_w = cost_w, time_w = time_w, tokens_w = tokens_w,
         );
     }
     println!();
@@ -787,21 +814,25 @@ fn cmd_log_summary(records: &[run_record::RunRecord]) -> Result<()> {
     let runs_w2 = 6;
 
     println!(
-        "{:<pt_w$} {:>steps_w$} {:>runs_w2$} {:>cost_w$} {:>time_w$}",
-        "PHASE/TRACK", "STEPS", "RUNS", "COST", "TIME",
+        "{:<pt_w$} {:>steps_w$} {:>runs_w2$} {:>cost_w$} {:>time_w$} {:>tokens_w$}",
+        "PHASE/TRACK", "STEPS", "RUNS", "COST", "TIME", "TOKENS",
         pt_w = pt_w, steps_w = steps_w, runs_w2 = runs_w2,
-        cost_w = cost_w, time_w = time_w,
+        cost_w = cost_w, time_w = time_w, tokens_w = tokens_w,
     );
-    let sep2 = pt_w + 1 + steps_w + 1 + runs_w2 + 1 + cost_w + 1 + time_w;
+    let sep2 = pt_w + 1 + steps_w + 1 + runs_w2 + 1 + cost_w + 1 + time_w + 1 + tokens_w;
     println!("{}", "─".repeat(sep2));
     for t in &tracks {
         let label = format!("{}/{}", t.phase_id, t.track_id);
         let cost_str = format!("${:.4}", t.cost_usd);
+        let tokens_str = format_tokens(
+            if t.input_tokens > 0 { Some(t.input_tokens) } else { None },
+            if t.output_tokens > 0 { Some(t.output_tokens) } else { None },
+        );
         println!(
-            "{:<pt_w$} {:>steps_w$} {:>runs_w2$} {:>cost_w$} {:>time_w$}",
-            label, t.steps, t.runs, cost_str, format_duration(t.duration_ms),
+            "{:<pt_w$} {:>steps_w$} {:>runs_w2$} {:>cost_w$} {:>time_w$} {:>tokens_w$}",
+            label, t.steps, t.runs, cost_str, format_duration(t.duration_ms), tokens_str,
             pt_w = pt_w, steps_w = steps_w, runs_w2 = runs_w2,
-            cost_w = cost_w, time_w = time_w,
+            cost_w = cost_w, time_w = time_w, tokens_w = tokens_w,
         );
     }
 

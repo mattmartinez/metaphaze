@@ -29,6 +29,10 @@ pub struct RunRecord {
     pub num_turns: Option<u32>,
     pub outcome: String,
     pub error: Option<String>,
+    #[serde(default)]
+    pub input_tokens: Option<u64>,
+    #[serde(default)]
+    pub output_tokens: Option<u64>,
 }
 
 pub fn ledger_path() -> PathBuf {
@@ -65,6 +69,8 @@ pub struct PhaseSummary {
     pub err: usize,
     pub cost_usd: f64,
     pub duration_ms: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
 }
 
 pub struct TrackSummary {
@@ -74,6 +80,8 @@ pub struct TrackSummary {
     pub runs: usize,
     pub cost_usd: f64,
     pub duration_ms: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
 }
 
 pub fn phase_summaries(records: &[RunRecord]) -> Vec<PhaseSummary> {
@@ -87,6 +95,8 @@ pub fn phase_summaries(records: &[RunRecord]) -> Vec<PhaseSummary> {
             err: 0,
             cost_usd: 0.0,
             duration_ms: 0,
+            input_tokens: 0,
+            output_tokens: 0,
         });
         entry.runs += 1;
         if r.outcome == "error" {
@@ -96,6 +106,8 @@ pub fn phase_summaries(records: &[RunRecord]) -> Vec<PhaseSummary> {
         }
         entry.cost_usd += r.cost_usd.unwrap_or(0.0);
         entry.duration_ms += r.duration_ms;
+        entry.input_tokens += r.input_tokens.unwrap_or(0);
+        entry.output_tokens += r.output_tokens.unwrap_or(0);
     }
     map.into_values().collect()
 }
@@ -113,10 +125,14 @@ pub fn track_summaries(records: &[RunRecord]) -> Vec<TrackSummary> {
             runs: 0,
             cost_usd: 0.0,
             duration_ms: 0,
+            input_tokens: 0,
+            output_tokens: 0,
         });
         entry.runs += 1;
         entry.cost_usd += r.cost_usd.unwrap_or(0.0);
         entry.duration_ms += r.duration_ms;
+        entry.input_tokens += r.input_tokens.unwrap_or(0);
+        entry.output_tokens += r.output_tokens.unwrap_or(0);
         steps_map.entry(key).or_default().insert(r.step_id.clone());
     }
     for (key, summary) in runs_map.iter_mut() {
@@ -125,6 +141,10 @@ pub fn track_summaries(records: &[RunRecord]) -> Vec<TrackSummary> {
         }
     }
     runs_map.into_values().collect()
+}
+
+pub fn total_project_cost(records: &[RunRecord]) -> f64 {
+    records.iter().filter_map(|r| r.cost_usd).sum()
 }
 
 pub fn load_all() -> Result<Vec<RunRecord>> {
@@ -186,6 +206,8 @@ mod tests {
             num_turns: Some(3),
             outcome: "success".to_string(),
             error: None,
+            input_tokens: None,
+            output_tokens: None,
         }
     }
 
@@ -213,9 +235,9 @@ mod tests {
     fn test_append_and_load() {
         let _mz = TempMz::new();
 
-        let r1 = RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P001".to_string(), track_id: "TR01".to_string(), step_id: "ST01".to_string(), stage: "execute".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:00Z".to_string(), finished_at: "2026-01-01T00:00:01Z".to_string(), duration_ms: 100, cost_usd: Some(0.01), num_turns: Some(1), outcome: "success".to_string(), error: None };
-        let r2 = RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P001".to_string(), track_id: "TR01".to_string(), step_id: "ST02".to_string(), stage: "verify".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:02Z".to_string(), finished_at: "2026-01-01T00:00:03Z".to_string(), duration_ms: 200, cost_usd: Some(0.02), num_turns: Some(2), outcome: "success".to_string(), error: None };
-        let r3 = RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P002".to_string(), track_id: "TR02".to_string(), step_id: "ST01".to_string(), stage: "execute".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:04Z".to_string(), finished_at: "2026-01-01T00:00:05Z".to_string(), duration_ms: 300, cost_usd: None, num_turns: None, outcome: "error".to_string(), error: Some("boom".to_string()) };
+        let r1 = RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P001".to_string(), track_id: "TR01".to_string(), step_id: "ST01".to_string(), stage: "execute".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:00Z".to_string(), finished_at: "2026-01-01T00:00:01Z".to_string(), duration_ms: 100, cost_usd: Some(0.01), num_turns: Some(1), outcome: "success".to_string(), error: None, input_tokens: None, output_tokens: None };
+        let r2 = RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P001".to_string(), track_id: "TR01".to_string(), step_id: "ST02".to_string(), stage: "verify".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:02Z".to_string(), finished_at: "2026-01-01T00:00:03Z".to_string(), duration_ms: 200, cost_usd: Some(0.02), num_turns: Some(2), outcome: "success".to_string(), error: None, input_tokens: None, output_tokens: None };
+        let r3 = RunRecord { id: Uuid::new_v4().to_string(), phase_id: "P002".to_string(), track_id: "TR02".to_string(), step_id: "ST01".to_string(), stage: "execute".to_string(), model: "m".to_string(), started_at: "2026-01-01T00:00:04Z".to_string(), finished_at: "2026-01-01T00:00:05Z".to_string(), duration_ms: 300, cost_usd: None, num_turns: None, outcome: "error".to_string(), error: Some("boom".to_string()), input_tokens: None, output_tokens: None };
 
         append(&r1).unwrap();
         append(&r2).unwrap();
@@ -272,6 +294,8 @@ mod tests {
             num_turns: None,
             outcome: "success".to_string(),
             error: None,
+            input_tokens: None,
+            output_tokens: None,
         };
         let json = serde_json::to_string(&record).unwrap();
         let parsed: RunRecord = serde_json::from_str(&json).unwrap();

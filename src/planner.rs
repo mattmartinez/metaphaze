@@ -69,6 +69,8 @@ pub fn generate_roadmap(project_state: &state::ProjectState, sender: Option<&eve
                 num_turns: r.num_turns,
                 outcome: "success".to_string(),
                 error: None,
+                input_tokens: r.input_tokens,
+                output_tokens: r.output_tokens,
             })?;
         }
         Err(e) => {
@@ -87,6 +89,8 @@ pub fn generate_roadmap(project_state: &state::ProjectState, sender: Option<&eve
                 num_turns: None,
                 outcome: "error".to_string(),
                 error: Some(e.to_string()),
+                input_tokens: None,
+                output_tokens: None,
             });
         }
     }
@@ -157,6 +161,8 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&
                 num_turns: r.num_turns,
                 outcome: "success".to_string(),
                 error: None,
+                input_tokens: r.input_tokens,
+                output_tokens: r.output_tokens,
             })?;
         }
         Err(e) => {
@@ -175,6 +181,8 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&
                 num_turns: None,
                 outcome: "error".to_string(),
                 error: Some(e.to_string()),
+                input_tokens: None,
+                output_tokens: None,
             });
         }
     }
@@ -291,6 +299,8 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
                 num_turns: r.num_turns,
                 outcome: "success".to_string(),
                 error: None,
+                input_tokens: r.input_tokens,
+                output_tokens: r.output_tokens,
             })?;
         }
         Err(e) => {
@@ -309,6 +319,8 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
                 num_turns: None,
                 outcome: "error".to_string(),
                 error: Some(e.to_string()),
+                input_tokens: None,
+                output_tokens: None,
             });
         }
     }

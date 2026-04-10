@@ -50,6 +50,8 @@ pub fn run_step(
                 num_turns: r.num_turns,
                 outcome: "success".to_string(),
                 error: None,
+                input_tokens: r.input_tokens,
+                output_tokens: r.output_tokens,
             })?;
         }
         Err(e) => {
@@ -68,6 +70,8 @@ pub fn run_step(
                 num_turns: None,
                 outcome: "error".to_string(),
                 error: Some(e.to_string()),
+                input_tokens: None,
+                output_tokens: None,
             });
         }
     }
@@ -152,6 +156,8 @@ pub fn run_track(
                 num_turns: r.num_turns,
                 outcome: "success".to_string(),
                 error: None,
+                input_tokens: r.input_tokens,
+                output_tokens: r.output_tokens,
             })?;
         }
         Err(e) => {
@@ -170,6 +176,8 @@ pub fn run_track(
                 num_turns: None,
                 outcome: "error".to_string(),
                 error: Some(e.to_string()),
+                input_tokens: None,
+                output_tokens: None,
             });
         }
     }
