@@ -141,6 +141,18 @@ impl ProjectState {
         false
     }
 
+    pub fn is_phase_complete(&self, phase_id: &str) -> bool {
+        if let Some(phase) = self.phases.iter().find(|ph| ph.id == phase_id) {
+            !phase.tracks.is_empty()
+                && phase
+                    .tracks
+                    .iter()
+                    .all(|t| t.steps.iter().all(|s| s.status == StepStatus::Complete))
+        } else {
+            false
+        }
+    }
+
     pub fn stats(&self) -> (usize, usize, usize, usize) {
         let mut total = 0;
         let mut done = 0;
@@ -227,6 +239,10 @@ pub fn context_path(phase_id: &str) -> PathBuf {
 
 pub fn roadmap_path(phase_id: &str) -> PathBuf {
     phase_dir(phase_id).join("ROADMAP.md")
+}
+
+pub fn roadmap_global_path() -> PathBuf {
+    mz_dir().join("ROADMAP.md")
 }
 
 pub fn init_project() -> Result<ProjectState> {
@@ -444,6 +460,38 @@ pub fn advance_phase(phase_id: &str) -> Result<()> {
         }
         Ok(())
     })
+}
+
+pub fn create_skeleton_phase(phase_id: &str, title: &str) -> Result<()> {
+    mutate_state(|state| {
+        if let Some(existing) = state.phases.iter_mut().find(|ph| ph.id == phase_id) {
+            if !existing.tracks.is_empty() {
+                // Phase already has tracks — leave it alone
+                return Ok(());
+            }
+            // Phase exists with no tracks — update the title
+            existing.title = title.to_string();
+            return Ok(());
+        }
+        // Brand-new skeleton phase
+        state.phases.push(PhaseEntry {
+            id: phase_id.to_string(),
+            title: title.to_string(),
+            tracks: vec![],
+        });
+        state.phases.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(())
+    })
+}
+
+pub fn completed_phase_ids() -> Result<Vec<String>> {
+    let state = load()?;
+    Ok(state
+        .phases
+        .iter()
+        .filter(|ph| state.is_phase_complete(&ph.id))
+        .map(|ph| ph.id.clone())
+        .collect())
 }
 
 pub fn reset_step(phase_id: &str, step_id: &str) -> Result<()> {
@@ -1018,6 +1066,93 @@ mod tests {
         advance_phase("P003").unwrap();
         let s = load().unwrap();
         assert_eq!(s.current_phase, "P003");
+    }
+
+    #[test]
+    fn test_is_phase_complete() {
+        let mut state = make_state();
+
+        // P001 has incomplete steps — not complete
+        assert!(!state.is_phase_complete("P001"));
+
+        // Mark all steps complete
+        for track in &mut state.phases[0].tracks {
+            for step in &mut track.steps {
+                step.status = StepStatus::Complete;
+            }
+        }
+        assert!(state.is_phase_complete("P001"));
+
+        // Non-existent phase returns false
+        assert!(!state.is_phase_complete("P999"));
+
+        // Phase with no tracks is not complete
+        let mut state2 = make_state();
+        state2.phases.push(PhaseEntry {
+            id: "P002".to_string(),
+            title: "Empty phase".to_string(),
+            tracks: vec![],
+        });
+        assert!(!state2.is_phase_complete("P002"));
+    }
+
+    #[test]
+    fn test_create_skeleton_phase() {
+        let _tmp = TempMz::new();
+
+        let state = make_state();
+        save(&state).unwrap();
+
+        // Create a new skeleton phase
+        create_skeleton_phase("P002", "Phase Two").unwrap();
+        let s = load().unwrap();
+        let p2 = s.phases.iter().find(|p| p.id == "P002").unwrap();
+        assert_eq!(p2.title, "Phase Two");
+        assert!(p2.tracks.is_empty());
+
+        // Idempotent: creating again preserves title
+        create_skeleton_phase("P002", "Phase Two Again").unwrap();
+        let s = load().unwrap();
+        let p2 = s.phases.iter().find(|p| p.id == "P002").unwrap();
+        // title updated since still no tracks
+        assert_eq!(p2.title, "Phase Two Again");
+
+        // Phases are sorted by id
+        create_skeleton_phase("P000", "Phase Zero").unwrap();
+        let s = load().unwrap();
+        assert_eq!(s.phases[0].id, "P000");
+        assert_eq!(s.phases[1].id, "P001");
+        assert_eq!(s.phases[2].id, "P002");
+
+        // Skip-if-has-tracks: P001 already has tracks — title must not change
+        create_skeleton_phase("P001", "Should Not Change").unwrap();
+        let s = load().unwrap();
+        let p1 = s.phases.iter().find(|p| p.id == "P001").unwrap();
+        assert_eq!(p1.title, "Phase 1");
+        assert!(!p1.tracks.is_empty());
+    }
+
+    #[test]
+    fn test_completed_phase_ids() {
+        let _tmp = TempMz::new();
+
+        let mut state = make_state();
+        save(&state).unwrap();
+
+        // No phases complete yet
+        let ids = completed_phase_ids().unwrap();
+        assert!(ids.is_empty());
+
+        // Mark all steps in P001 complete
+        for track in &mut state.phases[0].tracks {
+            for step in &mut track.steps {
+                step.status = StepStatus::Complete;
+            }
+        }
+        save(&state).unwrap();
+
+        let ids = completed_phase_ids().unwrap();
+        assert_eq!(ids, vec!["P001".to_string()]);
     }
 }
 
