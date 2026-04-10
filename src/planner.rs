@@ -742,6 +742,135 @@ Still to do.
 
         state::set_test_mz_dir(None);
     }
+
+    #[test]
+    fn test_auto_advance_state_machine() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let mz_path = dir.path().join(".mz");
+        fs::create_dir_all(&mz_path).unwrap();
+        state::set_test_mz_dir(Some(mz_path));
+
+        // Build state: P001 all complete, P002 skeleton (no tracks yet)
+        let initial_state = state::ProjectState {
+            name: "test".to_string(),
+            description: "test project".to_string(),
+            current_phase: "P001".to_string(),
+            phases: vec![
+                state::PhaseEntry {
+                    id: "P001".to_string(),
+                    title: "Foundation".to_string(),
+                    tracks: vec![state::TrackEntry {
+                        id: "TR01".to_string(),
+                        title: "Track 1".to_string(),
+                        depends_on: vec![],
+                        steps: vec![state::StepEntry {
+                            id: "ST01".to_string(),
+                            title: "Step 1".to_string(),
+                            status: state::StepStatus::Complete,
+                            blocked_reason: None,
+                            attempts: 1,
+                        }],
+                    }],
+                },
+                state::PhaseEntry {
+                    id: "P002".to_string(),
+                    title: "Core Logic".to_string(),
+                    tracks: vec![],
+                },
+            ],
+        };
+        state::save(&initial_state).unwrap();
+
+        let s = state::load().unwrap();
+
+        // 1. P001 is complete (has tracks, all steps done)
+        assert!(s.is_phase_complete("P001"));
+
+        // 2. next_phase_id returns P002
+        assert_eq!(s.next_phase_id(), Some("P002".to_string()));
+
+        // 3. next_pending_step returns None (current_phase=P001, all steps complete)
+        assert_eq!(s.next_pending_step(), None);
+
+        // 4. Add a pending step to P002 and advance current_phase
+        state::create_skeleton_phase("P002", "Core Logic").unwrap();
+
+        // Manually add a track+step to P002
+        let mut s2 = state::load().unwrap();
+        let p2 = s2.phases.iter_mut().find(|p| p.id == "P002").unwrap();
+        p2.tracks.push(state::TrackEntry {
+            id: "TR01".to_string(),
+            title: "Parser".to_string(),
+            depends_on: vec![],
+            steps: vec![state::StepEntry {
+                id: "ST01".to_string(),
+                title: "Write parser".to_string(),
+                status: state::StepStatus::Pending,
+                blocked_reason: None,
+                attempts: 0,
+            }],
+        });
+        state::save(&s2).unwrap();
+
+        // Advance current_phase to P002
+        state::advance_phase("P002").unwrap();
+
+        let s3 = state::load().unwrap();
+        assert_eq!(s3.current_phase(), "P002");
+
+        // 5. next_pending_step now returns the P002 step
+        let next = s3.next_pending_step();
+        assert_eq!(next, Some(("P002".to_string(), "TR01".to_string(), "ST01".to_string())));
+
+        state::set_test_mz_dir(None);
+    }
+
+    #[test]
+    fn test_parse_roadmap_mixed_case_and_completed_markers() {
+        // Simulate realistic Claude output: mixed case in body text, [COMPLETED] markers
+        let text = "\
+## P001 — Bootstrap [COMPLETED]
+
+Project scaffolding is done.
+
+## P002 — Core Engine
+
+Build the main processing loop.
+
+## P003 — CLI Interface
+
+Wire up commands.
+
+## P004 — polish [COMPLETED]
+
+Final cleanup done.
+
+## P005 — Release
+
+Ship it.
+";
+        let phases = parse_roadmap(text);
+
+        // Only non-completed phases should be returned
+        assert_eq!(phases.len(), 3);
+        assert_eq!(phases[0].id, "P002");
+        assert_eq!(phases[0].title, "Core Engine");
+        assert_eq!(phases[1].id, "P003");
+        assert_eq!(phases[1].title, "CLI Interface");
+        assert_eq!(phases[2].id, "P005");
+        assert_eq!(phases[2].title, "Release");
+
+        // IDs are uppercase (normalized)
+        for phase in &phases {
+            assert!(phase.id.chars().all(|c| !c.is_lowercase()), "ID should be uppercase: {}", phase.id);
+        }
+
+        // Description content is captured
+        assert!(phases[0].description.contains("Build the main processing loop"));
+    }
 }
 
 fn parse_and_create_steps(
