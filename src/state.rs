@@ -1268,12 +1268,8 @@ pub fn print_status(state: &ProjectState, detail: bool) -> Result<()> {
     let (total, done, in_progress, blocked) = state.stats();
     let pending = total.saturating_sub(done + in_progress + blocked);
 
-    // Load run records for detail mode; ignore errors (e.g. missing file)
-    let all_records = if detail {
-        run_record::load_all().unwrap_or_default()
-    } else {
-        vec![]
-    };
+    // Load run records (always needed for cost summary); ignore errors (e.g. missing file)
+    let all_records = run_record::load_all().unwrap_or_default();
 
     // Build index: (phase_id, track_id, step_id) -> records
     let mut record_map: HashMap<(String, String, String), Vec<&crate::run_record::RunRecord>> =
@@ -1374,6 +1370,33 @@ pub fn print_status(state: &ProjectState, detail: bool) -> Result<()> {
     // Show next step
     if let Some((ph, tr, st)) = state.next_pending_step() {
         println!("{}", format!("Next: {}/{}/{}", ph, tr, st).cyan());
+    }
+
+    // Cost summary
+    {
+        use crate::budget;
+        let total_cost = run_record::total_project_cost(&all_records);
+        let budget_cfg = budget::load().unwrap_or_default();
+        print!("\nCost: ${:.4} spent", total_cost);
+        if let Some(limit) = budget_cfg.max_usd {
+            let pct_remaining = if limit > 0.0 {
+                ((limit - total_cost).max(0.0) / limit) * 100.0
+            } else {
+                0.0
+            };
+            print!(" / ${:.2} limit ({:.1}% remaining)", limit, pct_remaining);
+        }
+        println!();
+
+        if detail {
+            let summaries = run_record::phase_summaries(&all_records);
+            if !summaries.is_empty() {
+                println!("  {:<12} {:>10}", "Phase", "Cost");
+                for ps in &summaries {
+                    println!("  {:<12} ${:>9.4}", ps.phase_id, ps.cost_usd);
+                }
+            }
+        }
     }
 
     Ok(())
