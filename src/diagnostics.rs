@@ -839,6 +839,130 @@ mod tests {
     }
 
     #[test]
+    fn test_healthy_step_returns_none() {
+        let records = vec![
+            make_record("execute_step", "success", 0.10),
+            make_record("verify_step", "success", 0.05),
+        ];
+        let diagnosis = diagnose_step(&records, "P001", "TR01", "ST01");
+        assert!(diagnosis.is_none(), "Healthy step should return None");
+    }
+
+    #[test]
+    fn test_check_state_integrity_clean() {
+        let _tmp = TempMz::new();
+        // Complete step with both SUMMARY.md and PLAN.md present
+        let state = make_state_with_step(StepStatus::Complete, 1);
+        let summary_path = crate::state::step_summary_path("P001", "TR01", "ST01");
+        let plan_path = crate::state::step_plan_path("P001", "TR01", "ST01");
+        std::fs::create_dir_all(summary_path.parent().unwrap()).unwrap();
+        std::fs::write(&summary_path, "## Done").unwrap();
+        std::fs::write(&plan_path, "## Plan").unwrap();
+
+        let issues = check_state_integrity(&state);
+        // Only possible remaining issue is the phase-not-advanced warning (all complete)
+        let non_phase_issues: Vec<_> = issues
+            .iter()
+            .filter(|i| !i.description.contains("all tracks complete"))
+            .collect();
+        assert!(
+            non_phase_issues.is_empty(),
+            "Expected no state integrity issues for clean state, got: {:?}",
+            non_phase_issues.iter().map(|i| &i.description).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_diagnose_all_steps_filters_current_phase() {
+        // State: current_phase = P001. P001/TR01/ST01 is InProgress (no bad records).
+        // P002/TR01/ST01 is InProgress and has repeated exec failures in records.
+        // Only P001 is the current phase, so diagnose_all_steps should return empty.
+        let state = ProjectState {
+            name: "test".to_string(),
+            description: "test".to_string(),
+            current_phase: "P001".to_string(),
+            phases: vec![
+                PhaseEntry {
+                    id: "P001".to_string(),
+                    title: "Phase 1".to_string(),
+                    tracks: vec![TrackEntry {
+                        id: "TR01".to_string(),
+                        title: "Track 1".to_string(),
+                        depends_on: vec![],
+                        steps: vec![StepEntry {
+                            id: "ST01".to_string(),
+                            title: "Step 1".to_string(),
+                            status: StepStatus::InProgress,
+                            blocked_reason: None,
+                            attempts: 1,
+                        }],
+                    }],
+                },
+                PhaseEntry {
+                    id: "P002".to_string(),
+                    title: "Phase 2".to_string(),
+                    tracks: vec![TrackEntry {
+                        id: "TR01".to_string(),
+                        title: "Track 1".to_string(),
+                        depends_on: vec![],
+                        steps: vec![StepEntry {
+                            id: "ST01".to_string(),
+                            title: "Step 1".to_string(),
+                            status: StepStatus::InProgress,
+                            blocked_reason: None,
+                            attempts: 2,
+                        }],
+                    }],
+                },
+            ],
+        };
+
+        // Records for P002/TR01/ST01 show repeated exec failures
+        let p002_records = vec![
+            RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: "P002".to_string(),
+                track_id: "TR01".to_string(),
+                step_id: "ST01".to_string(),
+                stage: "execute_step".to_string(),
+                model: "claude-sonnet-4-6".to_string(),
+                started_at: "2026-04-09T00:00:00Z".to_string(),
+                finished_at: "2026-04-09T00:00:01Z".to_string(),
+                duration_ms: 1000,
+                cost_usd: Some(0.10),
+                num_turns: Some(1),
+                outcome: "error".to_string(),
+                error: None,
+                input_tokens: None,
+                output_tokens: None,
+            },
+            RunRecord {
+                id: uuid::Uuid::new_v4().to_string(),
+                phase_id: "P002".to_string(),
+                track_id: "TR01".to_string(),
+                step_id: "ST01".to_string(),
+                stage: "execute_step".to_string(),
+                model: "claude-sonnet-4-6".to_string(),
+                started_at: "2026-04-09T00:00:02Z".to_string(),
+                finished_at: "2026-04-09T00:00:03Z".to_string(),
+                duration_ms: 1000,
+                cost_usd: Some(0.10),
+                num_turns: Some(1),
+                outcome: "error".to_string(),
+                error: None,
+                input_tokens: None,
+                output_tokens: None,
+            },
+        ];
+
+        let diagnoses = diagnose_all_steps(&p002_records, &state);
+        assert!(
+            diagnoses.is_empty(),
+            "diagnose_all_steps should only check current phase (P001), not P002"
+        );
+    }
+
+    #[test]
     fn test_check_artifacts_blocked_with_reason_no_warning() {
         let _tmp = TempMz::new();
         let state = ProjectState {
