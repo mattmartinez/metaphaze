@@ -890,14 +890,53 @@ pub fn collect_dependency_summaries_with_spec(
 /// template. Missing/unreadable files are silently skipped (a typo in a
 /// plan must never block a step). Returns an empty string when the spec
 /// has no `include_files`.
+///
+/// Security: every path must be repo-relative and resolve inside the repo
+/// root. Absolute paths, `..` components, and symlinks escaping the repo
+/// are rejected — a plan that lists `/etc/passwd` or `../../.ssh/id_rsa`
+/// must not exfiltrate arbitrary files into the model prompt.
 pub fn read_extra_files(spec: &crate::step_context::StepContextSpec) -> String {
     if spec.include_files.is_empty() {
         return String::new();
     }
+    // Repo root = parent of .mz (mz_root() returns `<repo>/.mz`).
+    let repo_root = match mz_root().parent() {
+        Some(p) => p.to_path_buf(),
+        None => return String::new(),
+    };
+    let repo_root_canon = match repo_root.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return String::new(),
+    };
     let mut out = String::new();
     for path in &spec.include_files {
         let p = std::path::Path::new(path);
-        let body = match fs::read_to_string(p) {
+        // Reject absolute paths outright.
+        if p.is_absolute() {
+            continue;
+        }
+        // Reject any `..` or root components (defence in depth; canonicalize
+        // below catches symlink escapes, but this rejects obviously bad
+        // input before touching the filesystem).
+        let has_bad_component = p.components().any(|c| {
+            matches!(
+                c,
+                std::path::Component::ParentDir | std::path::Component::RootDir
+            )
+        });
+        if has_bad_component {
+            continue;
+        }
+        // Resolve against repo root and canonicalize — this follows symlinks
+        // and gives us an absolute path we can prefix-check.
+        let resolved = match repo_root.join(p).canonicalize() {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if !resolved.starts_with(&repo_root_canon) {
+            continue;
+        }
+        let body = match fs::read_to_string(&resolved) {
             Ok(s) => s,
             Err(_) => continue,
         };

@@ -178,6 +178,11 @@ fn is_first_step_of_track(
     track_id: &str,
     step_id: &str,
 ) -> bool {
+    // "First step of the track" means literally the first by position. Any
+    // prior step — whether already run (Complete/InProgress/Blocked) or still
+    // Pending — disqualifies the target. This ensures `plan_track` is called
+    // exactly once per track (on ST01), and never re-invoked for a later step
+    // even if a user manually skips ahead with all-Pending prior steps.
     for ph in &project_state.phases {
         if ph.id != phase_id {
             continue;
@@ -186,17 +191,14 @@ fn is_first_step_of_track(
             if track.id != track_id {
                 continue;
             }
-            for step in &track.steps {
-                if step.id == step_id {
-                    return true;
-                }
-                if step.status != state::StepStatus::Pending {
-                    return false;
-                }
-            }
+            return track
+                .steps
+                .first()
+                .map(|s| s.id == step_id)
+                .unwrap_or(false);
         }
     }
-    true
+    false
 }
 
 fn plan_track(

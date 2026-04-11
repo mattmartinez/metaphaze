@@ -89,6 +89,16 @@ pub fn commit_step(phase_id: &str, track_id: &str, step_id: &str, title: &str, c
 }
 
 pub fn merge_track(phase_id: &str, track_id: &str, worktree_path: Option<&Path>) -> Result<()> {
+    // Anchor every command to the main repo root with `-C`. Without this
+    // anchor, running `mz auto` from inside a worktree (e.g. the user cd'd
+    // into `.mz/worktrees/...`) would checkout/merge into the *wrong* repo
+    // context. repo_root() asks git for the top-level of the current
+    // invocation; we still prefer that over process CWD because it
+    // normalizes to the main repo even if the caller happens to be inside
+    // the same repo's subdirectory.
+    let root = repo_root()?;
+    let root_str = root.to_string_lossy().to_string();
+
     // When a worktree path is provided, read the branch from that worktree.
     // Otherwise derive it from the phase/track convention.
     let branch = if let Some(wt) = worktree_path {
@@ -115,7 +125,7 @@ pub fn merge_track(phase_id: &str, track_id: &str, worktree_path: Option<&Path>)
 
     // BUG-6 fix: check checkout exit status
     let output = Command::new("git")
-        .args(["checkout", &default])
+        .args(["-C", &root_str, "checkout", &default])
         .output()
         .context("Failed to checkout default branch")?;
     if !output.status.success() {
@@ -140,7 +150,7 @@ pub fn merge_track(phase_id: &str, track_id: &str, worktree_path: Option<&Path>)
     match strategy {
         config::MergeStrategy::Squash => {
             let output = Command::new("git")
-                .args(["merge", "--squash", &branch])
+                .args(["-C", &root_str, "merge", "--squash", &branch])
                 .output()
                 .context("Failed to squash merge")?;
             if !output.status.success() {
@@ -149,7 +159,7 @@ pub fn merge_track(phase_id: &str, track_id: &str, worktree_path: Option<&Path>)
             }
 
             let output = Command::new("git")
-                .args(["commit", "-m", &message])
+                .args(["-C", &root_str, "commit", "-m", &message])
                 .output()
                 .context("Failed to commit merge")?;
             if !output.status.success() {
@@ -162,7 +172,7 @@ pub fn merge_track(phase_id: &str, track_id: &str, worktree_path: Option<&Path>)
             // intact. -m supplies the merge commit message in one shot, so we
             // don't need a separate `git commit` call.
             let output = Command::new("git")
-                .args(["merge", "--no-ff", "-m", &message, &branch])
+                .args(["-C", &root_str, "merge", "--no-ff", "-m", &message, &branch])
                 .output()
                 .context("Failed to no-ff merge")?;
             if !output.status.success() {
@@ -279,20 +289,52 @@ pub fn ensure_worktree(phase_id: &str, track_id: &str) -> Result<PathBuf> {
     let rel_path = format!(".mz/worktrees/{}/{}", phase_id, track_id);
     let worktree_path = root.join(&rel_path);
 
-    // If git already knows about this worktree, reuse it.
+    // If git already knows about this worktree, reuse it. Compare by
+    // canonicalized path on both sides — on macOS `/Users/...` vs
+    // `/private/var/...` symlink pairs, trailing slashes, or
+    // `.`/`..` components in `git worktree list` output can otherwise
+    // cause the match to miss and trigger a destructive `remove_dir_all`
+    // below on a still-registered worktree.
+    let target_canon = worktree_path.canonicalize().ok();
     if let Ok(existing) = list_worktrees() {
-        let target = worktree_path.to_string_lossy().to_string();
-        if existing.iter().any(|p| p == &target) {
-            return Ok(worktree_path);
+        for raw in &existing {
+            let raw_path = PathBuf::from(raw);
+            // 1) String equality against the uncanonicalized target (fast path).
+            if raw_path == worktree_path {
+                return Ok(worktree_path);
+            }
+            // 2) Canonicalized equality (covers symlink / formatting drift).
+            if let (Some(tc), Ok(ec)) = (target_canon.as_ref(), raw_path.canonicalize()) {
+                if &ec == tc {
+                    return Ok(worktree_path);
+                }
+            }
         }
     }
 
     // Not registered. Prune stale metadata in case a previous worktree dir was
-    // removed without `git worktree remove`, then create fresh.
+    // removed without `git worktree remove`, then re-check before we touch
+    // the filesystem — prune may have cleaned up enough that a subsequent
+    // `list_worktrees` now reports our target.
     let _ = Command::new("git").args(["worktree", "prune"]).output();
+    if let Ok(existing) = list_worktrees() {
+        for raw in &existing {
+            let raw_path = PathBuf::from(raw);
+            if raw_path == worktree_path {
+                return Ok(worktree_path);
+            }
+            if let (Some(tc), Ok(ec)) = (target_canon.as_ref(), raw_path.canonicalize()) {
+                if &ec == tc {
+                    return Ok(worktree_path);
+                }
+            }
+        }
+    }
 
-    // If a stale directory exists at the path with no git registration, remove it
-    // so `git worktree add` can succeed.
+    // If a stale directory exists at the path with no git registration,
+    // remove it so `git worktree add` can succeed. We've now double-checked
+    // via `list_worktrees` (pre- and post-prune) that git does not know
+    // about this path — safe to reclaim.
     if worktree_path.exists() {
         let _ = std::fs::remove_dir_all(&worktree_path);
     }

@@ -352,25 +352,33 @@ impl ParallelScheduler {
         let updated_state = state::load()?;
         let phase_id = &updated_state.current_phase;
 
+        // Track which tracks merged cleanly so we only reclaim *their*
+        // worktrees. Failed merges and blocked/unfinished tracks keep their
+        // worktrees intact so the user can inspect them, recover uncommitted
+        // work, and re-run after `mz reset`.
+        let mut merged_ok: Vec<String> = Vec::new();
         for track_id in &tracks_finished {
             let wt_path = track_to_worktree.get(track_id).map(PathBuf::as_path);
-            if let Err(e) = git::merge_track(phase_id, track_id, wt_path) {
-                events::emit(
-                    self.sender.as_ref(),
-                    &format!("Warning: merge failed for {}: {}", track_id, e),
-                );
-                // Mark all remaining pending steps blocked so user knows to reset and retry.
-                if let Ok(cur_state) = state::load() {
-                    if let Some(phase) = cur_state.phases.iter().find(|p| p.id == *phase_id) {
-                        if let Some(track) = phase.tracks.iter().find(|t| t.id == *track_id) {
-                            for step in &track.steps {
-                                if step.status == StepStatus::Pending {
-                                    let _ = state::mark_step_blocked(
-                                        phase_id,
-                                        track_id,
-                                        &step.id,
-                                        "Merge conflict after parallel execution",
-                                    );
+            match git::merge_track(phase_id, track_id, wt_path) {
+                Ok(()) => merged_ok.push(track_id.clone()),
+                Err(e) => {
+                    events::emit(
+                        self.sender.as_ref(),
+                        &format!("Warning: merge failed for {}: {}", track_id, e),
+                    );
+                    // Mark all remaining pending steps blocked so user knows to reset and retry.
+                    if let Ok(cur_state) = state::load() {
+                        if let Some(phase) = cur_state.phases.iter().find(|p| p.id == *phase_id) {
+                            if let Some(track) = phase.tracks.iter().find(|t| t.id == *track_id) {
+                                for step in &track.steps {
+                                    if step.status == StepStatus::Pending {
+                                        let _ = state::mark_step_blocked(
+                                            phase_id,
+                                            track_id,
+                                            &step.id,
+                                            "Merge conflict after parallel execution",
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -379,20 +387,41 @@ impl ParallelScheduler {
             }
         }
 
-        // Explicit cleanup with event logging; defuse the guard to prevent double-cleanup.
-        for (track_id, wt_path) in &track_to_worktree {
-            if let Err(e) = git::remove_worktree(wt_path) {
-                events::emit(
-                    self.sender.as_ref(),
-                    &format!(
-                        "Warning: failed to remove worktree for {}: {}",
-                        track_id,
-                        e
-                    ),
-                );
+        // Explicit cleanup for cleanly-merged tracks only. We defuse the
+        // guard first so its Drop impl won't wipe the surviving worktrees
+        // on panic/early-return; cleanup of successful tracks then runs
+        // transparently (failures just log a warning).
+        wt_guard.defuse();
+        for track_id in &merged_ok {
+            if let Some(wt_path) = track_to_worktree.get(track_id) {
+                if let Err(e) = git::remove_worktree(wt_path) {
+                    events::emit(
+                        self.sender.as_ref(),
+                        &format!(
+                            "Warning: failed to remove worktree for {}: {}",
+                            track_id,
+                            e
+                        ),
+                    );
+                }
             }
         }
-        wt_guard.defuse();
+        // Any tracks in `track_to_worktree` not in `merged_ok` keep their
+        // worktree for recovery. Emit a breadcrumb so users know where to look.
+        for track_id in track_to_worktree.keys() {
+            if !merged_ok.contains(track_id) {
+                if let Some(wt_path) = track_to_worktree.get(track_id) {
+                    events::emit(
+                        self.sender.as_ref(),
+                        &format!(
+                            "Preserved worktree for {} at {} (track did not merge cleanly)",
+                            track_id,
+                            wt_path.display()
+                        ),
+                    );
+                }
+            }
+        }
 
         Ok(BatchResult {
             completed: total_completed,
