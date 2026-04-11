@@ -22,8 +22,32 @@ use ratatui::{
     Terminal,
 };
 
+use crate::config;
 use crate::events::{EventReceiver, EventSender, ProgressEvent};
 use crate::state::{ProjectState, StepStatus};
+
+/// Resolve a color name from `.mz/config.yaml` (`theme.accent`) into a
+/// ratatui Color. Unknown values fall back to Cyan so a typo never bricks
+/// the TUI. Public so the few highlight sites that read the accent can
+/// share one parser.
+pub(crate) fn accent_color() -> Color {
+    let cfg = config::current();
+    color_from_name(&cfg.theme.accent)
+}
+
+fn color_from_name(name: &str) -> Color {
+    match name.to_ascii_lowercase().as_str() {
+        "cyan" => Color::Cyan,
+        "magenta" | "purple" => Color::Magenta,
+        "yellow" => Color::Yellow,
+        "green" => Color::Green,
+        "blue" => Color::Blue,
+        "red" => Color::Red,
+        "white" => Color::White,
+        "gray" | "grey" => Color::Gray,
+        _ => Color::Cyan,
+    }
+}
 
 /// Write a diagnostic line to /tmp/mz-stream-debug.log when MZ_STREAM_DEBUG is set.
 fn stream_debug_log(msg: &str) {
@@ -706,11 +730,26 @@ pub fn run_interactive() -> Result<()> {
         }
     };
 
-    let dashboard = DashboardState::from_project_state(&project_state);
-    let (tx, rx) = crate::events::channel();
-    // Drop the sender immediately — the shell starts idle with no active command.
-    drop(tx);
+    let mut dashboard = DashboardState::from_project_state(&project_state);
+    // TR04/ST01: startup welcome — give the user something to look at and a
+    // reminder of what commands exist before they type anything.
+    dashboard.output_lines.push_back(OutputLine::Label(format!(
+        "metaphaze v{} — interactive shell",
+        env!("CARGO_PKG_VERSION")
+    )));
+    dashboard.output_lines.push_back(OutputLine::Plain(format!(
+        "Project: {}  Phase: {}",
+        project_state.name,
+        project_state.current_phase()
+    )));
+    dashboard.output_lines.push_back(OutputLine::Plain(
+        "Type a command and press Enter. `help` lists commands. Tab completes. ↑/↓ history. q to quit.".to_string(),
+    ));
+    dashboard
+        .output_lines
+        .push_back(OutputLine::Plain(String::new()));
 
+    let (tx, rx) = crate::events::channel();
     let stop_signal = Arc::new(AtomicBool::new(false));
     let paused = Arc::new(AtomicBool::new(false));
     let mut app = init(dashboard, rx, Arc::clone(&stop_signal), Arc::clone(&paused))?;
@@ -723,7 +762,42 @@ pub fn run_interactive() -> Result<()> {
         return Ok(());
     }
 
+    // Persistent shell-side state. The sender is kept alive (cloned to each
+    // dispatch thread) so the channel never closes between commands.
+    let mut sender: EventSender = tx;
+    let mut handle: Option<std::thread::JoinHandle<Result<()>>> = None;
+
+    // TR05: command history. Loaded from .mz/history at startup, written back
+    // on every successful Enter, and navigable via Up/Down in Input mode.
+    let mut history: Vec<String> = crate::shell::load_history();
+    // history_pos is one past the end while not navigating; Up moves it down.
+    let mut history_pos: usize = history.len();
+    // Saved buffer when the user starts navigating history (so Down past end restores it).
+    let mut saved_input: Option<String> = None;
+
     loop {
+        // Drain events emitted by the running dispatch thread, if any.
+        if let Some(ref rx) = app.receiver {
+            while let Ok(event) = rx.try_recv() {
+                app.dashboard.update(event);
+            }
+        }
+
+        // TR03/ST01: when the running thread emits ExecutionFinished, the
+        // dashboard records (completed, blocked) in `finished`. Use that as
+        // the signal to leave Running mode and join the worker.
+        if matches!(app.mode, ShellMode::Running { .. }) && app.dashboard.finished.is_some() {
+            if let Some(h) = handle.take() {
+                let _ = h.join();
+            }
+            // Clear the finished marker so the next command starts clean.
+            app.dashboard.finished = None;
+            app.dashboard.active_steps.clear();
+            app.stop_signal.store(false, Ordering::Relaxed);
+            app.paused.store(false, Ordering::Relaxed);
+            app.mode = ShellMode::Idle;
+        }
+
         app.draw()?;
 
         if event::poll(Duration::from_millis(100))? {
@@ -764,6 +838,8 @@ pub fn run_interactive() -> Result<()> {
                             app.mode = ShellMode::Input;
                             app.input_buffer.push(c);
                             app.input_cursor = 1;
+                            history_pos = history.len();
+                            saved_input = None;
                         }
                         _ => {}
                     },
@@ -777,6 +853,70 @@ pub fn run_interactive() -> Result<()> {
                                 .unwrap_or(app.input_buffer.len());
                             app.input_buffer.insert(byte_pos, c);
                             app.input_cursor += 1;
+                            history_pos = history.len();
+                            saved_input = None;
+                        }
+                        KeyCode::Tab => {
+                            // TR06/ST01: tab completion for command names.
+                            // Only completes the first whitespace-separated
+                            // token (the command). Argument completion is out
+                            // of scope for P013.
+                            let buf = app.input_buffer.clone();
+                            let first_space = buf.find(char::is_whitespace);
+                            let (prefix, rest) = match first_space {
+                                Some(i) => (&buf[..i], Some(&buf[i..])),
+                                None => (buf.as_str(), None),
+                            };
+                            let names = crate::shell::command_names();
+                            let matches =
+                                crate::shell::complete_command(prefix, names);
+                            match matches.len() {
+                                1 => {
+                                    let mut new_buf = matches[0].clone();
+                                    if let Some(r) = rest {
+                                        new_buf.push_str(r);
+                                    } else {
+                                        // No args yet — append a space so the
+                                        // user can keep typing flags.
+                                        new_buf.push(' ');
+                                    }
+                                    app.input_cursor = new_buf.chars().count();
+                                    app.input_buffer = new_buf;
+                                }
+                                n if n > 1 => {
+                                    // Multiple matches: list them in the output panel.
+                                    app.dashboard.output_lines.push_back(
+                                        OutputLine::Plain(format!(
+                                            "completions: {}",
+                                            matches.join(" ")
+                                        )),
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                        KeyCode::Up => {
+                            // TR05/ST01: history navigation backward.
+                            if !history.is_empty() && history_pos > 0 {
+                                if history_pos == history.len() && saved_input.is_none() {
+                                    saved_input = Some(app.input_buffer.clone());
+                                }
+                                history_pos -= 1;
+                                app.input_buffer = history[history_pos].clone();
+                                app.input_cursor = app.input_buffer.chars().count();
+                            }
+                        }
+                        KeyCode::Down => {
+                            // TR05/ST01: history navigation forward.
+                            if history_pos < history.len() {
+                                history_pos += 1;
+                                if history_pos == history.len() {
+                                    app.input_buffer = saved_input.take().unwrap_or_default();
+                                } else {
+                                    app.input_buffer = history[history_pos].clone();
+                                }
+                                app.input_cursor = app.input_buffer.chars().count();
+                            }
                         }
                         KeyCode::Backspace => {
                             if app.input_cursor > 0 {
@@ -790,6 +930,8 @@ pub fn run_interactive() -> Result<()> {
                                 if app.input_buffer.is_empty() {
                                     app.mode = ShellMode::Idle;
                                 }
+                                history_pos = history.len();
+                                saved_input = None;
                             }
                         }
                         KeyCode::Left => {
@@ -809,27 +951,136 @@ pub fn run_interactive() -> Result<()> {
                         }
                         KeyCode::Enter => {
                             if !app.input_buffer.is_empty() {
-                                let cmd = app.input_buffer.clone();
+                                let cmd_str = app.input_buffer.clone();
                                 app.dashboard
                                     .output_lines
-                                    .push_back(OutputLine::Plain(format!("> {}", cmd)));
+                                    .push_back(OutputLine::Plain(format!("> {}", cmd_str)));
                                 app.input_buffer.clear();
                                 app.input_cursor = 0;
-                                app.mode = ShellMode::Idle;
+                                saved_input = None;
+
+                                // Persist to history. Skip consecutive duplicates.
+                                if history.last().map(|s| s.as_str()) != Some(cmd_str.as_str()) {
+                                    history.push(cmd_str.clone());
+                                    crate::shell::save_history(&history);
+                                }
+                                history_pos = history.len();
+
+                                // Parse and dispatch.
+                                match crate::shell::parse(&cmd_str) {
+                                    Ok(crate::shell::ShellCommand::Discuss { phase }) => {
+                                        // `discuss` shells out to a real
+                                        // interactive `claude` session that
+                                        // needs cooked stdio. Suspend the
+                                        // TUI, run it on this thread, then
+                                        // re-enter the alternate screen.
+                                        // Done inline (not on a worker
+                                        // thread) so only one consumer of
+                                        // the terminal exists at a time.
+                                        if let Err(e) = app.suspend() {
+                                            app.dashboard.output_lines.push_back(
+                                                OutputLine::Blocked(format!(
+                                                    "failed to suspend TUI: {}",
+                                                    e
+                                                )),
+                                            );
+                                            app.mode = ShellMode::Idle;
+                                        } else {
+                                            let result = (|| -> Result<()> {
+                                                let project_state = crate::state::load()?;
+                                                let phase_id = crate::state::normalize_phase_id(
+                                                    &phase.unwrap_or_else(|| {
+                                                        project_state.current_phase().to_string()
+                                                    }),
+                                                );
+                                                println!(
+                                                    "Starting discussion for {}...\n",
+                                                    phase_id
+                                                );
+                                                crate::discuss::run(&project_state, &phase_id)
+                                            })();
+                                            // Always try to resume, even if
+                                            // discuss failed — otherwise the
+                                            // shell is stuck in cooked mode.
+                                            let resume_err = app.resume().err();
+                                            match (result, resume_err) {
+                                                (Err(e), _) => {
+                                                    app.dashboard.output_lines.push_back(
+                                                        OutputLine::Blocked(format!(
+                                                            "discuss failed: {}",
+                                                            e
+                                                        )),
+                                                    );
+                                                }
+                                                (Ok(()), Some(e)) => {
+                                                    app.dashboard.output_lines.push_back(
+                                                        OutputLine::Blocked(format!(
+                                                            "failed to resume TUI: {}",
+                                                            e
+                                                        )),
+                                                    );
+                                                }
+                                                (Ok(()), None) => {
+                                                    app.dashboard.output_lines.push_back(
+                                                        OutputLine::Plain(
+                                                            "discuss complete".to_string(),
+                                                        ),
+                                                    );
+                                                }
+                                            }
+                                            app.mode = ShellMode::Idle;
+                                        }
+                                    }
+                                    Ok(parsed) => {
+                                        // Fresh channel + signals for this run.
+                                        let (new_tx, new_rx) = crate::events::channel();
+                                        let new_stop = Arc::new(AtomicBool::new(false));
+                                        let new_paused = Arc::new(AtomicBool::new(false));
+                                        app.receiver = Some(new_rx);
+                                        app.stop_signal = Arc::clone(&new_stop);
+                                        app.paused = Arc::clone(&new_paused);
+                                        app.dashboard.finished = None;
+                                        sender = new_tx;
+                                        let dispatch_sender = sender.clone();
+
+                                        app.mode = ShellMode::Running {
+                                            command: cmd_str.clone(),
+                                            started_at: Instant::now(),
+                                        };
+
+                                        handle = Some(std::thread::spawn(move || {
+                                            crate::shell::dispatch(
+                                                parsed,
+                                                dispatch_sender,
+                                                new_stop,
+                                                new_paused,
+                                            )
+                                        }));
+                                    }
+                                    Err(msg) => {
+                                        app.dashboard.output_lines.push_back(
+                                            OutputLine::Blocked(format!("error: {}", msg)),
+                                        );
+                                        app.mode = ShellMode::Idle;
+                                    }
+                                }
                             }
                         }
                         KeyCode::Esc => {
                             app.input_buffer.clear();
                             app.input_cursor = 0;
                             app.mode = ShellMode::Idle;
+                            history_pos = history.len();
+                            saved_input = None;
                         }
                         _ => {}
                     },
                     ShellMode::Running { .. } => {
                         if let KeyCode::Char('q') = key.code {
-                            // Stop running command, return to idle
+                            // Stop request: signal the worker. The transition
+                            // back to Idle happens in the event-drain block
+                            // once dispatch returns ExecutionFinished.
                             app.stop_signal.store(true, Ordering::Relaxed);
-                            app.mode = ShellMode::Idle;
                         }
                     }
                 }
@@ -840,6 +1091,13 @@ pub fn run_interactive() -> Result<()> {
             break;
         }
     }
+
+    // If a command was still running on quit, signal stop and join.
+    if let Some(h) = handle.take() {
+        app.stop_signal.store(true, Ordering::Relaxed);
+        let _ = h.join();
+    }
+    drop(sender);
 
     app.restore()?;
     Ok(())
@@ -856,11 +1114,37 @@ impl App {
         Ok(())
     }
 
+    /// Temporarily hand the terminal back to the OS so a child process can
+    /// run with inherited stdio (cooked mode, normal screen). Used by the
+    /// shell to shell out to fully-interactive commands like `discuss`,
+    /// which spawn a real `claude` session that needs the user's keyboard
+    /// directly. Pair every `suspend()` with a `resume()`.
+    pub fn suspend(&mut self) -> Result<()> {
+        disable_raw_mode()?;
+        execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
+        Ok(())
+    }
+
+    /// Re-enter the alternate screen and raw mode after a `suspend()`. Also
+    /// forces a full redraw on the next `draw()` so the dashboard is
+    /// rebuilt cleanly even if the child process scribbled over the screen.
+    pub fn resume(&mut self) -> Result<()> {
+        enable_raw_mode()?;
+        execute!(self.terminal.backend_mut(), EnterAlternateScreen)?;
+        self.terminal.clear()?;
+        Ok(())
+    }
+
     pub fn draw(&mut self) -> Result<()> {
         // Pre-compute scroll offsets using terminal size.
         {
             let term_size = self.terminal.size()?;
-            let track_height = (self.dashboard.tracks.len() as u16 + 2).max(4).min(8);
+            // Cap the track panel at 12 rows total (10 visible track rows + 2
+            // borders). The previous cap of 8 silently clipped any phase with
+            // more than 6 tracks — TR07 was invisible in the panel even though
+            // it existed in state.yaml. Tracks beyond the cap are reachable via
+            // j/k scrolling on the focused panel.
+            let track_height = (self.dashboard.tracks.len() as u16 + 2).clamp(4, 12);
             let active_count = self.dashboard.active_steps.len();
             let middle_height = if active_count > 1 { (4u16 + active_count as u16).min(8) } else { 4u16 };
             let layout_chunks = Layout::vertical([
@@ -893,8 +1177,9 @@ impl App {
             let total = visual_line_count;
             let max_scroll = total.saturating_sub(output_inner_height);
 
-            // Clamp track scroll offset
-            let max_track_scroll = self.dashboard.tracks.len().saturating_sub(6);
+            // Clamp track scroll offset. Visible rows = track_height - 2 borders.
+            let visible_track_rows = (track_height as usize).saturating_sub(2);
+            let max_track_scroll = self.dashboard.tracks.len().saturating_sub(visible_track_rows);
             if self.dashboard.track_scroll_offset as usize > max_track_scroll {
                 self.dashboard.track_scroll_offset = max_track_scroll as u16;
             }
@@ -960,7 +1245,8 @@ impl App {
             }
 
             // Four vertical chunks: top=track overview, middle=step progress, bottom=output, footer=status bar
-            let track_height = (tracks.len() as u16 + 2).max(4).min(8); // borders + content, capped at 8
+            // See pre-compute block above for the rationale on the 12-row cap.
+            let track_height = (tracks.len() as u16 + 2).clamp(4, 12);
             let active_count = dashboard.active_steps.len();
             let middle_height = if active_count > 1 { (4u16 + active_count as u16).min(8) } else { 4u16 };
             let chunks = Layout::vertical([
@@ -1039,8 +1325,6 @@ impl App {
             {
                 let all_steps_done: usize = tracks.iter().map(|t| t.steps_done).sum();
                 let all_steps_total: usize = tracks.iter().map(|t| t.steps_total).sum();
-                let tracks_done =
-                    tracks.iter().filter(|t| t.status == TrackStatus::Done).count();
                 let tracks_total = tracks.len();
                 let current_step = if dashboard.active_steps.len() == 1 {
                     dashboard.active_steps.values().next()
@@ -1259,8 +1543,9 @@ impl App {
                     let content_width = prompt_len + before.width() + cursor_width + after.width();
                     let pad_width = bar_width.saturating_sub(content_width + right_len);
 
+                    let accent = accent_color();
                     let mut spans: Vec<Span> = vec![
-                        Span::styled(prompt, Style::default().bg(Color::DarkGray).fg(Color::Cyan)),
+                        Span::styled(prompt, Style::default().bg(Color::DarkGray).fg(accent)),
                         Span::styled(before, Style::default().bg(Color::DarkGray).fg(Color::White)),
                     ];
                     match cursor_char {
@@ -1386,7 +1671,7 @@ impl App {
                     }
                     spans.push(Span::styled(" ".repeat(left_pad), bar_style));
                     if !center_text.is_empty() {
-                        spans.push(Span::styled(center_text, Style::default().bg(Color::DarkGray).fg(Color::Cyan)));
+                        spans.push(Span::styled(center_text, Style::default().bg(Color::DarkGray).fg(accent_color())));
                     }
                     spans.push(Span::styled(" ".repeat(right_pad), bar_style));
                     spans.push(Span::styled(right_text, Style::default().bg(Color::DarkGray).fg(Color::White)));

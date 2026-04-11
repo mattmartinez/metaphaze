@@ -32,8 +32,6 @@ pub enum StreamEvent {
         #[serde(default)]
         cost_usd: Option<f64>,
         #[serde(default)]
-        duration_ms: Option<u64>,
-        #[serde(default)]
         num_turns: Option<u32>,
         #[serde(default)]
         input_tokens: Option<u64>,
@@ -61,27 +59,6 @@ pub enum StreamEvent {
 }
 
 impl StreamEvent {
-    /// Return the model name from a `MessageStart` event, or `None` for other variants.
-    pub fn model_name(&self) -> Option<&str> {
-        if let StreamEvent::MessageStart { message } = self {
-            Some(message.model.as_str())
-        } else {
-            None
-        }
-    }
-
-
-    /// Extract the text from a `ContentBlockDelta` event with a `text_delta`.
-    /// Returns `None` for non-text deltas or non-delta events.
-    pub fn delta_text(&self) -> Option<&str> {
-        if let StreamEvent::ContentBlockDelta { delta } = self {
-            if let DeltaContent::TextDelta { text } = delta {
-                return Some(text.as_str());
-            }
-        }
-        None
-    }
-
     /// Return a one-line summary for a `ToolUse` event: "tool_name key_arg".
     /// For file-oriented tools, extracts the path/pattern from `input`.
     /// Returns `None` for non-ToolUse events.
@@ -226,7 +203,11 @@ mod tests {
         let line = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
         let event = parse_stream_line(line).expect("should parse");
         assert!(matches!(event, StreamEvent::ContentBlockDelta { .. }));
-        assert_eq!(event.delta_text(), Some("Hello"));
+        if let StreamEvent::ContentBlockDelta { delta: DeltaContent::TextDelta { text } } = event {
+            assert_eq!(text, "Hello");
+        } else {
+            panic!("expected text delta");
+        }
     }
 
     #[test]
@@ -235,14 +216,9 @@ mod tests {
         let line = r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#;
         let event = parse_stream_line(line).expect("should parse");
         assert!(matches!(event, StreamEvent::ContentBlockDelta { .. }));
-        assert_eq!(event.delta_text(), None);
-    }
-
-    #[test]
-    fn test_delta_text_on_non_delta_event() {
-        let line = r#"{"type":"error","error":"something went wrong"}"#;
-        let event = parse_stream_line(line).expect("should parse");
-        assert_eq!(event.delta_text(), None);
+        if let StreamEvent::ContentBlockDelta { delta } = event {
+            assert!(!matches!(delta, DeltaContent::TextDelta { .. }));
+        }
     }
 
     #[test]
@@ -271,10 +247,9 @@ mod tests {
     fn test_result_event_still_parses() {
         let line = r#"{"type":"result","result":"final answer","cost_usd":0.01,"duration_ms":1200,"num_turns":3}"#;
         let event = parse_stream_line(line).expect("should parse");
-        if let StreamEvent::Result { result, cost_usd, duration_ms, num_turns, .. } = event {
+        if let StreamEvent::Result { result, cost_usd, num_turns, .. } = event {
             assert_eq!(result, "final answer");
             assert_eq!(cost_usd, Some(0.01));
-            assert_eq!(duration_ms, Some(1200));
             assert_eq!(num_turns, Some(3));
         } else {
             panic!("expected Result variant");
@@ -370,22 +345,22 @@ mod tests {
     fn test_message_start_parses_model() {
         let line = r#"{"type":"message_start","message":{"model":"claude-sonnet-4-20250514","id":"msg_xxx","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":0}}}"#;
         let event = parse_stream_line(line).expect("should parse");
-        assert!(matches!(event, StreamEvent::MessageStart { .. }));
-        assert_eq!(event.model_name(), Some("claude-sonnet-4-20250514"));
+        if let StreamEvent::MessageStart { message } = event {
+            assert_eq!(message.model, "claude-sonnet-4-20250514");
+        } else {
+            panic!("expected MessageStart");
+        }
     }
 
     #[test]
     fn test_message_start_minimal() {
         let line = r#"{"type":"message_start","message":{"model":"claude-opus-4-6"}}"#;
         let event = parse_stream_line(line).expect("should parse");
-        assert_eq!(event.model_name(), Some("claude-opus-4-6"));
-    }
-
-    #[test]
-    fn test_model_name_on_non_message_start() {
-        let line = r#"{"type":"error","error":"oops"}"#;
-        let event = parse_stream_line(line).expect("should parse");
-        assert_eq!(event.model_name(), None);
+        if let StreamEvent::MessageStart { message } = event {
+            assert_eq!(message.model, "claude-opus-4-6");
+        } else {
+            panic!("expected MessageStart");
+        }
     }
 
     #[test]
@@ -416,15 +391,108 @@ mod tests {
     fn test_result_with_tokens() {
         let line = r#"{"type":"result","result":"done","cost_usd":0.05,"duration_ms":2000,"num_turns":4,"input_tokens":8000,"output_tokens":1500}"#;
         let event = parse_stream_line(line).expect("should parse");
-        if let StreamEvent::Result { result, cost_usd, duration_ms, num_turns, input_tokens, output_tokens } = event {
+        if let StreamEvent::Result { result, cost_usd, num_turns, input_tokens, output_tokens } = event {
             assert_eq!(result, "done");
             assert_eq!(cost_usd, Some(0.05));
-            assert_eq!(duration_ms, Some(2000));
             assert_eq!(num_turns, Some(4));
             assert_eq!(input_tokens, Some(8000));
             assert_eq!(output_tokens, Some(1500));
         } else {
             panic!("expected Result variant");
         }
+    }
+
+    // ── Mock-claude integration: pipe a real subprocess through parse_stream_line ──
+
+    fn mock_claude_binary() -> std::path::PathBuf {
+        // unit test exe is at target/<profile>/deps/<bin>-<hash> — go up two
+        // dirs to land in target/<profile>/ where mock_claude lives.
+        let mut p = std::env::current_exe().expect("current_exe");
+        p.pop(); // deps/
+        p.pop(); // <profile>/
+        p.push("mock_claude");
+        if !p.exists() {
+            panic!(
+                "mock_claude binary not found at {} — run `cargo build --bin mock_claude` first",
+                p.display()
+            );
+        }
+        p
+    }
+
+    #[test]
+    fn test_mock_claude_full_stream_parses() {
+        use std::process::Command;
+        let out = Command::new(mock_claude_binary())
+            .env("MOCK_CLAUDE_TEXT", "hello from mock")
+            .env("MOCK_CLAUDE_RESULT", "final answer")
+            .env("MOCK_CLAUDE_COST", "0.07")
+            .env("MOCK_CLAUDE_TURNS", "3")
+            .output()
+            .expect("spawn mock_claude");
+        assert!(out.status.success(), "mock should exit 0");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let events: Vec<_> = stdout.lines().filter_map(parse_stream_line).collect();
+        // Expect: message_start, assistant, result
+        assert_eq!(events.len(), 3, "expected 3 events, got {}: {}", events.len(), stdout);
+        assert!(matches!(events[0], StreamEvent::MessageStart { .. }));
+        assert!(matches!(events[1], StreamEvent::Assistant { .. }));
+        if let StreamEvent::Result { ref result, cost_usd, num_turns, .. } = events[2] {
+            assert_eq!(result, "final answer");
+            assert_eq!(cost_usd, Some(0.07));
+            assert_eq!(num_turns, Some(3));
+        } else {
+            panic!("expected Result event last, got {:?}", events[2]);
+        }
+    }
+
+    #[test]
+    fn test_mock_claude_tool_use_mode_stream_parses() {
+        use std::process::Command;
+        let out = Command::new(mock_claude_binary())
+            .env("MOCK_CLAUDE_MODE", "tool_use")
+            .env("MOCK_CLAUDE_TEXT", "looking up")
+            .env("MOCK_CLAUDE_TOOL", "Read")
+            .env("MOCK_CLAUDE_TOOL_ARG", "src/main.rs")
+            .output()
+            .expect("spawn mock_claude");
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let events: Vec<_> = stdout.lines().filter_map(parse_stream_line).collect();
+        // Expect: message_start, assistant (with tool_use block), tool_result, result
+        assert_eq!(events.len(), 4, "got: {}", stdout);
+        assert!(matches!(events[0], StreamEvent::MessageStart { .. }));
+        // Assistant event should carry one Text block + one ToolUse block
+        if let StreamEvent::Assistant { ref message } = events[1] {
+            let has_text = message.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }));
+            let tool_block = message.content.iter().find_map(|b| {
+                if let ContentBlock::ToolUse { name, input } = b {
+                    Some((name.clone(), input.clone()))
+                } else {
+                    None
+                }
+            });
+            assert!(has_text, "assistant should have text block");
+            let (name, input) = tool_block.expect("should have tool_use block");
+            assert_eq!(name, "Read");
+            assert_eq!(input.get("file_path").and_then(|v| v.as_str()), Some("src/main.rs"));
+        } else {
+            panic!("expected Assistant event at index 1");
+        }
+        assert!(matches!(events[2], StreamEvent::ToolResult { .. }));
+        assert!(matches!(events[3], StreamEvent::Result { .. }));
+    }
+
+    #[test]
+    fn test_mock_claude_bad_json_yields_no_events() {
+        use std::process::Command;
+        let out = Command::new(mock_claude_binary())
+            .env("MOCK_CLAUDE_MODE", "bad_json")
+            .output()
+            .expect("spawn mock_claude");
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let events: Vec<_> = stdout.lines().filter_map(parse_stream_line).collect();
+        assert!(events.is_empty(), "bad_json mode should yield no parseable events");
     }
 }

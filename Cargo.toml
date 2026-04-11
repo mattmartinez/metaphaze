@@ -9,6 +9,10 @@ license = "MIT"
 name = "mz"
 path = "src/main.rs"
 
+[[bin]]
+name = "mock_claude"
+path = "src/bin/mock_claude.rs"
+
 [dependencies]
 fs2 = "0.4"
 clap = { version = "4", features = ["derive"] }

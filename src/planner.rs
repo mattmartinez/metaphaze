@@ -2,7 +2,7 @@ use anyhow::Result;
 use regex::Regex;
 use std::fs;
 
-use crate::{claude, events, prompt, run_record, state};
+use crate::{claude, config, events, prompt, run_record, state};
 
 pub fn generate_roadmap(project_state: &state::ProjectState, sender: Option<&events::EventSender>) -> Result<()> {
     let project_md = state::read_project_md()?;
@@ -44,8 +44,9 @@ pub fn generate_roadmap(project_state: &state::ProjectState, sender: Option<&eve
         project_state.name,
     );
 
+    let cfg = config::current();
     let opts = claude::ClaudeOptions::new(rendered)
-        .model("opus")
+        .model(&cfg.models.plan_roadmap)
         .max_turns(30)
         .system_prompt(&sys_prompt);
 
@@ -136,8 +137,9 @@ pub fn run(project_state: &state::ProjectState, phase_id: &str, sender: Option<&
         phase_id, project_state.name,
     );
 
+    let cfg = config::current();
     let opts = claude::ClaudeOptions::new(rendered)
-        .model("opus")
+        .model(&cfg.models.plan_phase)
         .max_turns(60)
         .system_prompt(&sys_prompt);
 
@@ -274,8 +276,9 @@ pub fn replan(project_state: &state::ProjectState, phase_id: &str, decision: &st
         phase_id, project_state.name,
     );
 
+    let cfg = config::current();
     let opts = claude::ClaudeOptions::new(prompt_text)
-        .model("opus")
+        .model(&cfg.models.replan)
         .max_turns(40)
         .system_prompt(&sys_prompt);
 
@@ -479,7 +482,6 @@ pub(crate) fn parse_plan(plan_text: &str) -> Vec<ParsedTrack> {
 pub(crate) struct ParsedPhase {
     pub id: String,
     pub title: String,
-    pub description: String,
 }
 
 /// Parse a roadmap response into a list of non-completed phases.
@@ -495,14 +497,7 @@ pub(crate) fn parse_roadmap(text: &str) -> Vec<ParsedPhase> {
     };
 
     let mut phases = vec![];
-    let matches: Vec<_> = phase_re.find_iter(text).collect();
-
-    for (i, m) in matches.iter().enumerate() {
-        let caps = match phase_re.captures(m.as_str()) {
-            Some(c) => c,
-            None => continue,
-        };
-
+    for caps in phase_re.captures_iter(text) {
         let id = caps[1].to_uppercase();
         let title = caps[2].trim().to_string();
 
@@ -511,17 +506,8 @@ pub(crate) fn parse_roadmap(text: &str) -> Vec<ParsedPhase> {
             continue;
         }
 
-        let heading_end = m.end();
-        let section_end = if i + 1 < matches.len() {
-            matches[i + 1].start()
-        } else {
-            text.len()
-        };
-        let description = text[heading_end..section_end].trim().to_string();
-
-        phases.push(ParsedPhase { id, title, description });
+        phases.push(ParsedPhase { id, title });
     }
-
     phases
 }
 
@@ -733,7 +719,6 @@ Implement mark_complete on ProjectState.
         assert_eq!(phases.len(), 1);
         assert_eq!(phases[0].id, "P001");
         assert_eq!(phases[0].title, "Bootstrap");
-        assert_eq!(phases[0].description, "Set up the project skeleton.");
     }
 
     #[test]
@@ -755,7 +740,6 @@ Final touches.
         assert_eq!(phases.len(), 3);
         assert_eq!(phases[0].id, "P001");
         assert_eq!(phases[0].title, "Bootstrap");
-        assert!(phases[0].description.contains("Initialize project."));
         assert_eq!(phases[1].id, "P002");
         assert_eq!(phases[2].id, "P003");
     }
@@ -847,12 +831,10 @@ Still to do.
             ParsedPhase {
                 id: "P001".to_string(),
                 title: "Foundation".to_string(),
-                description: String::new(),
             },
             ParsedPhase {
                 id: "P003".to_string(),
                 title: "New Phase".to_string(),
-                description: String::new(),
             },
         ];
         apply_roadmap_phases(&new_phases).unwrap();
@@ -999,9 +981,6 @@ Ship it.
         for phase in &phases {
             assert!(phase.id.chars().all(|c| !c.is_lowercase()), "ID should be uppercase: {}", phase.id);
         }
-
-        // Description content is captured
-        assert!(phases[0].description.contains("Build the main processing loop"));
     }
 }
 

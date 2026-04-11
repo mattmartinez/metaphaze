@@ -1,5 +1,6 @@
 mod budget;
 mod claude;
+mod config;
 mod discuss;
 mod events;
 mod stream;
@@ -9,7 +10,9 @@ mod git;
 mod planner;
 mod prompt;
 mod scheduler;
+mod shell;
 mod state;
+mod step_context;
 mod verifier;
 mod run_record;
 mod diagnostics;
@@ -197,9 +200,15 @@ fn cmd_budget(action: Option<BudgetAction>) -> Result<()> {
 fn cmd_init() -> Result<()> {
     println!("Initializing new Metaphaze project...\n");
     state::init_project()?;
+    // Drop a commented config.yaml next to PROJECT.md so users discover the
+    // tunables (model selection, retry caps, merge strategy, theme) without
+    // having to read the source. write_default_commented is a no-op if a
+    // config.yaml already exists.
+    config::write_default_commented()?;
     println!("\nProject initialized at .mz/");
     println!("  PROJECT.md  — your project definition");
     println!("  STATE.md    — current state dashboard");
+    println!("  config.yaml — defaults for models, budget, retries, git, theme");
     println!("\nNext: run `mz discuss` to capture decisions, then `mz plan` to decompose into steps.");
     Ok(())
 }
@@ -239,7 +248,7 @@ fn cmd_plan(phase: Option<String>, no_tui: bool) -> Result<()> {
     }
 }
 
-fn cmd_plan_inner(
+pub(crate) fn cmd_plan_inner(
     phase_id: Option<String>,
     sender: Option<events::EventSender>,
     _stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -305,7 +314,7 @@ fn cmd_next(max_budget_usd: Option<f64>, no_tui: bool) -> Result<()> {
     }
 }
 
-fn cmd_next_inner(
+pub(crate) fn cmd_next_inner(
     max_budget_usd: Option<f64>,
     sender: Option<events::EventSender>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -331,6 +340,30 @@ fn cmd_next_inner(
             let _ = tx.send(events::ProgressEvent::BudgetExhausted { spent: status.spent, limit });
         }
         return Ok(());
+    }
+
+    // Zombie reaper: clean up any InProgress steps left by a prior crashed run
+    // before scheduling. See cmd_auto_inner for the full rationale.
+    {
+        let initial_state = state::load()?;
+        let phase_id = initial_state.current_phase().to_string();
+        if let Ok(reaped) = state::reap_stale_in_progress(&phase_id) {
+            if !reaped.is_empty() {
+                let summary = reaped
+                    .iter()
+                    .map(|(t, s)| format!("{}/{}", t, s))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                emit_output(
+                    &sender,
+                    &format!(
+                        "Reaped {} stale in-progress step(s) from prior run: {}",
+                        reaped.len(),
+                        summary
+                    ),
+                );
+            }
+        }
     }
 
     let project_state = state::load()?;
@@ -381,8 +414,24 @@ fn cmd_next_inner(
                 }
             }
 
+            // Always run the step inside a worktree so we never mutate the
+            // main repo's HEAD. The worktree is preserved across `mz next`
+            // calls and cleaned up when the track is fully merged.
+            let worktree_path = match git::ensure_worktree(&phase_id, &track_id) {
+                Ok(p) => p,
+                Err(e) => {
+                    emit_output(&sender, &format!("Failed to create worktree for {}: {}", track_id, e));
+                    if let Some(tx) = &sender {
+                        let _ = tx.send(events::ProgressEvent::ExecutionFinished {
+                            completed: 0,
+                            blocked: 0,
+                        });
+                    }
+                    return Err(e);
+                }
+            };
             let run_result =
-                executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref(), None);
+                executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref(), Some(&worktree_path));
 
             let (completed, blocked) = match run_result {
                 Ok(()) => {
@@ -470,7 +519,7 @@ fn emit_output(sender: &Option<events::EventSender>, msg: &str) {
     events::emit(sender.as_ref(), msg);
 }
 
-fn cmd_auto_inner(
+pub(crate) fn cmd_auto_inner(
     max_steps: Option<usize>,
     max_budget_usd: Option<f64>,
     sender: Option<events::EventSender>,
@@ -485,8 +534,42 @@ fn cmd_auto_inner(
     let mut blocked = 0;
     let mut retries: HashMap<String, u32> = HashMap::new();
     let mut phase_started = false;
+    // Retry caps from .mz/config.yaml — captured once per `mz auto` invocation
+    // so all retry decisions in this run see a consistent value.
+    let cfg_snapshot = config::current();
+    let max_executor_attempts = cfg_snapshot.retry.max_executor_attempts;
+    let max_verifier_attempts = cfg_snapshot.retry.max_verifier_attempts;
 
     emit_output(&sender, "Starting autonomous execution...");
+
+    // Zombie reaper: a prior `mz auto` run that was killed (Ctrl+C, SIGKILL,
+    // rate-limit crash) leaves steps marked InProgress in state.yaml. The
+    // scheduler then sees them as "already running" and the next run goes
+    // idle with no work. Reset any such steps back to Pending so they get
+    // re-executed. Logs a one-line summary so the user can see what happened.
+    {
+        let initial_state = state::load()?;
+        let phase_id = initial_state.current_phase().to_string();
+        match state::reap_stale_in_progress(&phase_id) {
+            Ok(reaped) if !reaped.is_empty() => {
+                let summary = reaped
+                    .iter()
+                    .map(|(t, s)| format!("{}/{}", t, s))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                emit_output(
+                    &sender,
+                    &format!(
+                        "Reaped {} stale in-progress step(s) from prior run: {}",
+                        reaped.len(),
+                        summary
+                    ),
+                );
+            }
+            Ok(_) => {}
+            Err(e) => emit_output(&sender, &format!("Zombie reaper warning: {}", e)),
+        }
+    }
 
     loop {
         if stop.load(Ordering::Relaxed) {
@@ -547,14 +630,25 @@ fn cmd_auto_inner(
                     paused: std::sync::Arc::clone(&paused),
                     max_budget_usd,
                 };
-                let batch = sched.run_parallel_batch()?;
-                completed += batch.completed;
-                blocked += batch.blocked;
-                for track_id in &batch.tracks_finished {
-                    if let Some(tx) = &sender {
-                        let _ = tx.send(events::ProgressEvent::TrackCompleted {
-                            track_id: track_id.clone(),
-                        });
+                // Bug B fix: surface scheduler errors to the TUI instead of
+                // silently exiting via `?`. A worktree-creation failure used
+                // to kill `mz auto` with no message in the output panel.
+                match sched.run_parallel_batch() {
+                    Ok(batch) => {
+                        completed += batch.completed;
+                        blocked += batch.blocked;
+                        for track_id in &batch.tracks_finished {
+                            if let Some(tx) = &sender {
+                                let _ = tx.send(events::ProgressEvent::TrackCompleted {
+                                    track_id: track_id.clone(),
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        emit_output(&sender, &format!("Parallel batch failed: {}", e));
+                        emit_output(&sender, "Hint: run `mz doctor` to inspect git/worktree state, then retry.");
+                        break;
                     }
                 }
                 continue;
@@ -603,18 +697,31 @@ fn cmd_auto_inner(
                     *count = disk_attempts;
                 }
 
-                if let Err(e) = executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref(), None) {
+                // Bug A fix: always run inside a worktree, even in the serial
+                // path. The previous behavior of `executor::run_step(..., None)`
+                // called `git checkout -b mz/<phase>/<track>` in the main repo,
+                // which corrupted the main repo's HEAD and broke subsequent
+                // parallel runs (the branch was already checked out elsewhere).
+                let serial_worktree = match git::ensure_worktree(&phase_id, &track_id) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        emit_output(&sender, &format!("Failed to create worktree for {}: {}", track_id, e));
+                        emit_output(&sender, "Hint: run `mz doctor` to inspect git/worktree state, then retry.");
+                        break;
+                    }
+                };
+                if let Err(e) = executor::run_step(&project_state, &phase_id, &track_id, &step_id, sender.as_ref(), Some(&serial_worktree)) {
                     emit_output(&sender, &format!("Step failed: {}", e));
                     *count += 1;
                     state::increment_step_attempts(&phase_id, &track_id, &step_id)?;
 
-                    if *count >= 3 {
+                    if *count >= max_executor_attempts {
                         let records = run_record::load_all().unwrap_or_default();
                         let diagnosis = diagnostics::diagnose_step(&records, &phase_id, &track_id, &step_id);
                         let blocked_reason = diagnosis
                             .as_ref()
                             .map(|d| diagnostics::format_blocked_reason(d))
-                            .unwrap_or_else(|| "Failed after 3 retries".to_string());
+                            .unwrap_or_else(|| format!("Failed after {} retries", max_executor_attempts));
                         emit_output(&sender, &format!("Step {} blocked: {}", step_id, blocked_reason));
                         state::mark_step_blocked(&phase_id, &track_id, &step_id, &blocked_reason)?;
                         blocked += 1;
@@ -626,7 +733,7 @@ fn cmd_auto_inner(
                             });
                         }
                     } else {
-                        emit_output(&sender, &format!("Retrying {} (attempt {}/3)", step_id, count));
+                        emit_output(&sender, &format!("Retrying {} (attempt {}/{})", step_id, count, max_executor_attempts));
                         // Step remains InProgress; loop will pick it up again
                         if let Some(tx) = &sender {
                             let _ = tx.send(events::ProgressEvent::StepFailed {
@@ -675,7 +782,7 @@ fn cmd_auto_inner(
                         diagnosis.as_ref().map(|d| &d.issue),
                         Some(diagnostics::StepIssue::VerifyOscillation)
                     );
-                    if *count >= 2 || is_oscillating {
+                    if *count >= max_verifier_attempts || is_oscillating {
                         let blocked_reason = diagnosis
                             .as_ref()
                             .map(|d| diagnostics::format_blocked_reason(d))
@@ -691,7 +798,7 @@ fn cmd_auto_inner(
                             });
                         }
                     } else {
-                        emit_output(&sender, &format!("Verify failed, retrying {} (attempt {}/3)", step_id, count));
+                        emit_output(&sender, &format!("Verify failed, retrying {} (attempt {}/{})", step_id, count, max_verifier_attempts));
                         if let Some(tx) = &sender {
                             let _ = tx.send(events::ProgressEvent::StepFailed {
                                 track_id: track_id.clone(),
@@ -708,8 +815,12 @@ fn cmd_auto_inner(
                     if let Err(e) = verifier::run_track(&updated, &phase_id, &track_id, sender.as_ref()) {
                         emit_output(&sender, &format!("Track verification issue: {}", e));
                     }
-                    if let Err(e) = git::merge_track(&phase_id, &track_id, None) {
+                    // Pass the serial worktree to merge_track so it reads the
+                    // branch from there, and remove the worktree once merged.
+                    if let Err(e) = git::merge_track(&phase_id, &track_id, Some(&serial_worktree)) {
                         emit_output(&sender, &format!("Git merge issue: {}", e));
+                    } else if let Err(e) = git::remove_worktree(&serial_worktree) {
+                        emit_output(&sender, &format!("Worktree cleanup issue: {}", e));
                     }
                     if let Some(tx) = &sender {
                         let _ = tx.send(events::ProgressEvent::TrackCompleted {
@@ -1109,9 +1220,7 @@ fn cmd_doctor() -> Result<()> {
             let label = match diag.issue {
                 diagnostics::StepIssue::VerifyOscillation => "Verify oscillation",
                 diagnostics::StepIssue::RepeatedExecFailure => "Repeated exec failure",
-                diagnostics::StepIssue::StaleInProgress => "Stale in-progress",
                 diagnostics::StepIssue::CostEscalation => "Cost escalation",
-                diagnostics::StepIssue::NoProgress => "No progress",
             };
             println!(
                 "  {} {}/{}: {} — {}, ${:.2} burned",
@@ -1131,16 +1240,8 @@ fn cmd_doctor() -> Result<()> {
                     "Check the step's output log at .mz/phases/{}/{}/steps/{}-SUMMARY.md for the failure. Use mz reset {} to retry after fixing the underlying issue.",
                     diag.phase_id, diag.track_id, diag.step_id, diag.step_id
                 ),
-                diagnostics::StepIssue::StaleInProgress => format!(
-                    "This step may be from a crashed session. Use mz reset {} to clear it.",
-                    diag.step_id
-                ),
                 diagnostics::StepIssue::CostEscalation => format!(
                     "Review step plan complexity and reduce scope. Use mz reset {} to retry.",
-                    diag.step_id
-                ),
-                diagnostics::StepIssue::NoProgress => format!(
-                    "Manually inspect and reset the step. Use mz reset {} to retry.",
                     diag.step_id
                 ),
             };

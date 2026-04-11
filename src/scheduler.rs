@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::{budget, diagnostics, events, events::EventSender, executor, git, run_record, state, verifier};
+use crate::{budget, config, diagnostics, events, events::EventSender, executor, git, run_record, state, verifier};
 use crate::state::{ProjectState, StepStatus};
 
 /// Ensures all worktrees in the list are removed when dropped.
@@ -119,10 +119,15 @@ impl ParallelScheduler {
             });
         }
 
-        // Create a worktree for every runnable track.
+        // Create or reuse a worktree for every runnable track. ensure_worktree
+        // is idempotent — it reuses an existing registered worktree at the
+        // canonical path, or creates a fresh one. Using `create_worktree`
+        // here used to fail on every parallel batch after the first run,
+        // because the worktrees from the previous run were still registered
+        // and `git worktree add` rejects duplicate paths.
         let mut tasks: Vec<TrackTask> = Vec::with_capacity(runnable.len());
         for (phase_id, track_id, pending_steps) in runnable {
-            let worktree_path = git::create_worktree(&phase_id, &track_id)?;
+            let worktree_path = git::ensure_worktree(&phase_id, &track_id)?;
             tasks.push(TrackTask {
                 phase_id,
                 track_id,
@@ -145,6 +150,11 @@ impl ParallelScheduler {
         let paused = Arc::clone(&self.paused);
 
         let max_budget_usd = self.max_budget_usd;
+        // Capture retry caps from config once per batch so all worker threads
+        // observe a consistent value even if .mz/config.yaml is edited mid-run.
+        let cfg = config::current();
+        let max_executor_attempts = cfg.retry.max_executor_attempts;
+        let max_verifier_attempts = cfg.retry.max_verifier_attempts;
 
         let handles: Vec<std::thread::JoinHandle<TrackOutcome>> = tasks
             .into_iter()
@@ -253,7 +263,7 @@ impl ParallelScheduler {
                                                 diagnosis.as_ref().map(|d| &d.issue),
                                                 Some(diagnostics::StepIssue::VerifyOscillation)
                                             );
-                                            if step_retries >= 2 || is_oscillating {
+                                            if step_retries >= max_verifier_attempts || is_oscillating {
                                                 let blocked_reason = diagnosis
                                                     .as_ref()
                                                     .map(|d| diagnostics::format_blocked_reason(d))
@@ -282,13 +292,13 @@ impl ParallelScheduler {
                                 Err(_) => {
                                     step_retries += 1;
                                     let _ = state::increment_step_attempts(&phase_id, &track_id, step_id);
-                                    if step_retries >= 3 {
+                                    if step_retries >= max_executor_attempts {
                                         let records = run_record::load_all().unwrap_or_default();
                                         let diagnosis = diagnostics::diagnose_step(&records, &phase_id, &track_id, step_id);
                                         let blocked_reason = diagnosis
                                             .as_ref()
                                             .map(|d| diagnostics::format_blocked_reason(d))
-                                            .unwrap_or_else(|| "Failed after 3 retries".to_string());
+                                            .unwrap_or_else(|| format!("Failed after {} retries", max_executor_attempts));
                                         let _ = state::mark_step_blocked(&phase_id, &track_id, step_id, &blocked_reason);
                                         blocked += 1;
                                         if let Some(tx) = &sender_clone {

@@ -9,15 +9,12 @@ pub struct StepDiagnosis {
     pub issue: StepIssue,
     pub detail: String,
     pub cost_burned: f64,
-    pub attempt_count: u32,
 }
 
 pub enum StepIssue {
     VerifyOscillation,
     RepeatedExecFailure,
-    StaleInProgress,
     CostEscalation,
-    NoProgress,
 }
 
 pub fn diagnose_step(
@@ -36,7 +33,6 @@ pub fn diagnose_step(
     }
 
     let cost_burned: f64 = step_records.iter().filter_map(|r| r.cost_usd).sum();
-    let attempt_count = step_records.len() as u32;
 
     // Check VerifyOscillation: 2+ execute_step with outcome "success" followed by verify_step with outcome "error"
     let oscillation_count = count_verify_oscillations(&step_records);
@@ -51,7 +47,6 @@ pub fn diagnose_step(
                 oscillation_count
             ),
             cost_burned,
-            attempt_count,
         });
     }
 
@@ -65,7 +60,6 @@ pub fn diagnose_step(
             issue: StepIssue::RepeatedExecFailure,
             detail: format!("{} consecutive execute failures", fail_count),
             cost_burned,
-            attempt_count,
         });
     }
 
@@ -78,7 +72,6 @@ pub fn diagnose_step(
             issue: StepIssue::CostEscalation,
             detail,
             cost_burned,
-            attempt_count,
         });
     }
 
@@ -172,16 +165,8 @@ pub fn format_blocked_reason(diagnosis: &StepDiagnosis) -> String {
             "Repeated exec failure: {}, ${:.2} burned",
             diagnosis.detail, diagnosis.cost_burned
         ),
-        StepIssue::StaleInProgress => format!(
-            "Stale in-progress: {}, ${:.2} burned",
-            diagnosis.detail, diagnosis.cost_burned
-        ),
         StepIssue::CostEscalation => format!(
             "Cost escalation: {}, ${:.2} burned",
-            diagnosis.detail, diagnosis.cost_burned
-        ),
-        StepIssue::NoProgress => format!(
-            "No progress: {}, ${:.2} burned",
             diagnosis.detail, diagnosis.cost_burned
         ),
     }
@@ -195,7 +180,6 @@ pub enum Severity {
 
 pub struct HealthIssue {
     pub severity: Severity,
-    pub category: &'static str,
     pub description: String,
     pub suggestion: String,
 }
@@ -209,14 +193,26 @@ pub fn check_state_integrity(state: &ProjectState) -> Vec<HealthIssue> {
     // Check if all tracks in current_phase are complete but current_phase still points here
     let current = state.current_phase();
     if state.is_phase_complete(current) {
+        // There is no `mz advance` command — auto-advance happens inside
+        // `mz auto` when it detects a complete phase mid-run, or when
+        // `mz plan` plans the next phase. Suggest the right one based on
+        // whether a next phase already exists in state.
+        let suggestion = match state.next_phase_id() {
+            Some(next) => format!(
+                "Run `mz auto` to execute and auto-advance into {}",
+                next
+            ),
+            None => "All planned phases complete. Run `mz plan` to generate a new roadmap, \
+                     or `mz discuss <phase>` to start a new one."
+                .to_string(),
+        };
         issues.push(HealthIssue {
             severity: Severity::Warning,
-            category: "state",
             description: format!(
                 "Phase {} has all tracks complete but current_phase still points to it",
                 current
             ),
-            suggestion: "Run `mz advance` to move to the next phase".to_string(),
+            suggestion,
         });
     }
 
@@ -231,8 +227,7 @@ pub fn check_state_integrity(state: &ProjectState) -> Vec<HealthIssue> {
                         if !summary_path.exists() {
                             issues.push(HealthIssue {
                                 severity: Severity::Error,
-                                category: "state",
-                                description: format!(
+                                                    description: format!(
                                     "{}/{}/{} is Complete but SUMMARY.md is missing",
                                     phase.id, track.id, step.id
                                 ),
@@ -248,8 +243,7 @@ pub fn check_state_integrity(state: &ProjectState) -> Vec<HealthIssue> {
                         if !plan_path.exists() {
                             issues.push(HealthIssue {
                                 severity: Severity::Warning,
-                                category: "state",
-                                description: format!(
+                                                    description: format!(
                                     "{}/{}/{} is Complete but PLAN.md is missing",
                                     phase.id, track.id, step.id
                                 ),
@@ -293,8 +287,7 @@ pub fn check_state_integrity(state: &ProjectState) -> Vec<HealthIssue> {
                         if is_stale {
                             issues.push(HealthIssue {
                                 severity: Severity::Warning,
-                                category: "state",
-                                description: format!(
+                                                    description: format!(
                                     "{}/{}/{} is InProgress with no recent activity (>30 min)",
                                     phase.id, track.id, step.id
                                 ),
@@ -307,8 +300,7 @@ pub fn check_state_integrity(state: &ProjectState) -> Vec<HealthIssue> {
                         if step.attempts > 0 {
                             issues.push(HealthIssue {
                                 severity: Severity::Error,
-                                category: "state",
-                                description: format!(
+                                                    description: format!(
                                     "{}/{}/{} is Pending but has {} attempts recorded",
                                     phase.id, track.id, step.id, step.attempts
                                 ),
@@ -338,7 +330,18 @@ pub fn check_git_integrity(state: &ProjectState) -> Vec<HealthIssue> {
             let stdout = String::from_utf8_lossy(&out.stdout);
             stdout
                 .lines()
-                .map(|l| l.trim().trim_start_matches("* ").to_string())
+                .map(|l| {
+                    // `git branch` marks the current branch with `* ` and
+                    // branches checked out in another worktree with `+ `.
+                    // Strip whichever marker is present, otherwise the raw
+                    // line bleeds into the suggested fix command.
+                    let trimmed = l.trim();
+                    trimmed
+                        .strip_prefix("* ")
+                        .or_else(|| trimmed.strip_prefix("+ "))
+                        .unwrap_or(trimmed)
+                        .to_string()
+                })
                 .filter(|l| !l.is_empty())
                 .collect::<Vec<_>>()
         }
@@ -368,7 +371,6 @@ pub fn check_git_integrity(state: &ProjectState) -> Vec<HealthIssue> {
         if !active_branches.contains(branch) {
             issues.push(HealthIssue {
                 severity: Severity::Warning,
-                category: "git",
                 description: format!(
                     "Branch '{}' has no matching pending/in-progress track in state",
                     branch
@@ -401,7 +403,6 @@ pub fn check_git_integrity(state: &ProjectState) -> Vec<HealthIssue> {
     {
         issues.push(HealthIssue {
             severity: Severity::Info,
-            category: "git",
             description: format!(
                 "Current branch '{}' is not the default branch and not an active mz/ branch",
                 current_branch
@@ -448,7 +449,6 @@ pub fn check_artifacts(state: &ProjectState, phase_id: &str) -> Vec<HealthIssue>
                     if !dir.exists() {
                         issues.push(HealthIssue {
                             severity: Severity::Error,
-                            category: "artifacts",
                             description: format!(
                                 "Track directory missing for completed step {}/{}/{}",
                                 phase_id, track.id, step.id
@@ -462,7 +462,6 @@ pub fn check_artifacts(state: &ProjectState, phase_id: &str) -> Vec<HealthIssue>
                     if !summary_path.exists() {
                         issues.push(HealthIssue {
                             severity: Severity::Error,
-                            category: "artifacts",
                             description: format!(
                                 "SUMMARY.md missing for completed step {}/{}/{}",
                                 phase_id, track.id, step.id
@@ -478,7 +477,6 @@ pub fn check_artifacts(state: &ProjectState, phase_id: &str) -> Vec<HealthIssue>
                     if !plan_path.exists() {
                         issues.push(HealthIssue {
                             severity: Severity::Warning,
-                            category: "artifacts",
                             description: format!(
                                 "PLAN.md missing for completed step {}/{}/{}",
                                 phase_id, track.id, step.id
@@ -497,7 +495,6 @@ pub fn check_artifacts(state: &ProjectState, phase_id: &str) -> Vec<HealthIssue>
                     if reason_missing {
                         issues.push(HealthIssue {
                             severity: Severity::Warning,
-                            category: "artifacts",
                             description: format!(
                                 "Step {}/{}/{} is Blocked but has no blocked_reason",
                                 phase_id, track.id, step.id
@@ -550,7 +547,6 @@ mod tests {
         let diagnosis = diagnose_step(&records, "P001", "TR01", "ST01").unwrap();
         assert!(matches!(diagnosis.issue, StepIssue::VerifyOscillation));
         assert!((diagnosis.cost_burned - 0.30).abs() < 1e-9);
-        assert_eq!(diagnosis.attempt_count, 4);
     }
 
     #[test]
@@ -631,7 +627,6 @@ mod tests {
             issue: StepIssue::VerifyOscillation,
             detail: "3 exec-ok/verify-fail cycles detected".to_string(),
             cost_burned: 0.42,
-            attempt_count: 6,
         };
         let reason = format_blocked_reason(&diagnosis);
         assert!(reason.contains("Verify oscillation"));
@@ -647,7 +642,6 @@ mod tests {
             issue: StepIssue::RepeatedExecFailure,
             detail: "2 consecutive execute failures".to_string(),
             cost_burned: 0.20,
-            attempt_count: 2,
         };
         let reason = format_blocked_reason(&diagnosis);
         assert!(reason.contains("Repeated exec failure"));

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::fs;
 
-use crate::{claude, events::EventSender, prompt, run_record, state};
+use crate::{claude, config, events::EventSender, prompt, run_record, state};
 
 pub fn run_step(
     _project_state: &state::ProjectState,
@@ -26,8 +26,9 @@ pub fn run_step(
 
     let rendered = prompt::render(prompt::templates::VERIFY_STEP, &vars);
 
+    let cfg = config::current();
     let opts = claude::ClaudeOptions::new(rendered)
-        .model("sonnet")
+        .model(&cfg.models.verify_step)
         .max_turns(30);
 
     println!("  Verifying {}/{}...", track_id, step_id);
@@ -132,8 +133,9 @@ pub fn run_track(
 
     let rendered = prompt::render(prompt::templates::VERIFY_TRACK, &vars);
 
+    let cfg = config::current();
     let opts = claude::ClaudeOptions::new(rendered)
-        .model("opus")
+        .model(&cfg.models.verify_track)
         .max_turns(40);
 
     println!("Running end-to-end track verification...");
@@ -189,4 +191,142 @@ pub fn run_track(
 
     println!("Track verification saved to {}", verify_path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{PhaseEntry, ProjectState, StepEntry, StepStatus, TrackEntry};
+    use std::path::PathBuf;
+    fn mock_claude_binary() -> PathBuf {
+        let mut p = std::env::current_exe().expect("current_exe");
+        p.pop(); // deps/
+        p.pop(); // <profile>/
+        p.push("mock_claude");
+        if !p.exists() {
+            panic!("mock_claude binary not found at {}", p.display());
+        }
+        p
+    }
+
+    struct TempMz {
+        _dir: tempfile::TempDir,
+    }
+
+    impl TempMz {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let mz_path = dir.path().join(".mz");
+            std::fs::create_dir_all(&mz_path).unwrap();
+            crate::state::set_test_mz_dir(Some(mz_path.clone()));
+            crate::run_record::set_test_mz_dir(Some(mz_path));
+            TempMz { _dir: dir }
+        }
+    }
+
+    impl Drop for TempMz {
+        fn drop(&mut self) {
+            crate::state::set_test_mz_dir(None);
+            crate::run_record::set_test_mz_dir(None);
+        }
+    }
+
+    fn make_state() -> ProjectState {
+        ProjectState {
+            name: "test".to_string(),
+            description: "".to_string(),
+            current_phase: "P001".to_string(),
+            phases: vec![PhaseEntry {
+                id: "P001".to_string(),
+                title: "Phase 1".to_string(),
+                tracks: vec![TrackEntry {
+                    id: "TR01".to_string(),
+                    title: "Track 1".to_string(),
+                    depends_on: vec![],
+                    steps: vec![StepEntry {
+                        id: "ST01".to_string(),
+                        title: "Step 1".to_string(),
+                        status: StepStatus::Complete,
+                        blocked_reason: None,
+                        attempts: 1,
+                    }],
+                }],
+            }],
+        }
+    }
+
+    fn write_plan_and_summary() {
+        let plan_path = crate::state::step_plan_path("P001", "TR01", "ST01");
+        std::fs::create_dir_all(plan_path.parent().unwrap()).unwrap();
+        std::fs::write(&plan_path, "## Plan\nDo the thing").unwrap();
+        let summary_path = crate::state::step_summary_path("P001", "TR01", "ST01");
+        std::fs::write(&summary_path, "## What was done\nThe thing was done.").unwrap();
+    }
+
+    #[test]
+    fn test_run_step_passes_when_mock_returns_pass_verdict() {
+        let _env = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tmp = TempMz::new();
+        let state = make_state();
+        write_plan_and_summary();
+
+        std::env::set_var("MZ_CLAUDE_BINARY", mock_claude_binary());
+        std::env::set_var("MOCK_CLAUDE_RESULT", "VERDICT: pass\nAll truths satisfied.");
+        std::env::set_var("MOCK_CLAUDE_TEXT", "verifying");
+        // Make sure no leftover failure mode env carries over
+        std::env::remove_var("MOCK_CLAUDE_MODE");
+
+        let result = run_step(&state, "P001", "TR01", "ST01", None);
+
+        std::env::remove_var("MZ_CLAUDE_BINARY");
+        std::env::remove_var("MOCK_CLAUDE_RESULT");
+        std::env::remove_var("MOCK_CLAUDE_TEXT");
+
+        assert!(result.is_ok(), "verifier should pass on PASS verdict: {:?}", result.err());
+        // VERIFY.md should have been written
+        let verify_path = crate::state::track_dir("P001", "TR01")
+            .join("steps")
+            .join("ST01-VERIFY.md");
+        assert!(verify_path.exists(), "VERIFY.md should exist at {}", verify_path.display());
+    }
+
+    #[test]
+    fn test_run_step_fails_when_mock_returns_fail_verdict() {
+        let _env = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tmp = TempMz::new();
+        let state = make_state();
+        write_plan_and_summary();
+
+        std::env::set_var("MZ_CLAUDE_BINARY", mock_claude_binary());
+        std::env::set_var("MOCK_CLAUDE_RESULT", "VERDICT: fail\nMissing artifact.");
+        std::env::set_var("MOCK_CLAUDE_TEXT", "verifying");
+        std::env::remove_var("MOCK_CLAUDE_MODE");
+
+        let result = run_step(&state, "P001", "TR01", "ST01", None);
+
+        std::env::remove_var("MZ_CLAUDE_BINARY");
+        std::env::remove_var("MOCK_CLAUDE_RESULT");
+        std::env::remove_var("MOCK_CLAUDE_TEXT");
+
+        assert!(result.is_err(), "verifier should bail on FAIL verdict");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("Verification failed"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_run_step_fails_when_summary_missing() {
+        let _env = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tmp = TempMz::new();
+        let state = make_state();
+        // Note: write only the plan, NOT the summary
+        let plan_path = crate::state::step_plan_path("P001", "TR01", "ST01");
+        std::fs::create_dir_all(plan_path.parent().unwrap()).unwrap();
+        std::fs::write(&plan_path, "## Plan").unwrap();
+
+        // Even with the env override, run_step should bail before invoking claude.
+        let result = run_step(&state, "P001", "TR01", "ST01", None);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("No summary"), "got: {}", msg);
+    }
 }

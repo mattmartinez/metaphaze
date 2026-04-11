@@ -34,7 +34,14 @@ pub fn config_path() -> PathBuf {
 pub fn load() -> Result<BudgetConfig> {
     let path = config_path();
     if !path.exists() {
-        return Ok(BudgetConfig::default());
+        // Fall back to the project-level default in .mz/config.yaml.
+        // `mz budget set` writes to budget.yaml, so once a user explicitly
+        // sets a budget that file always wins. Until then, the new-project
+        // default from config.yaml provides the cap.
+        let cfg = crate::config::current();
+        return Ok(BudgetConfig {
+            max_usd: cfg.budget.default_max_usd,
+        });
     }
     let contents = std::fs::read_to_string(&path)?;
     let config: BudgetConfig = serde_yaml::from_str(&contents)?;
@@ -94,7 +101,13 @@ mod tests {
     impl TempMz {
         fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
+            // budget.rs has its own TEST_MZ_DIR for budget.yaml, but
+            // budget::load() now also reads .mz/config.yaml as a fallback.
+            // Point both thread-locals at the tempdir so the config-fallback
+            // path doesn't accidentally pick up a real `.mz/config.yaml` from
+            // the cwd of the test runner.
             set_test_mz_dir(Some(dir.path().to_path_buf()));
+            crate::state::set_test_mz_dir(Some(dir.path().to_path_buf()));
             TempMz { _dir: dir }
         }
     }
@@ -102,6 +115,7 @@ mod tests {
     impl Drop for TempMz {
         fn drop(&mut self) {
             set_test_mz_dir(None);
+            crate::state::set_test_mz_dir(None);
         }
     }
 

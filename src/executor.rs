@@ -3,38 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
-use crate::{claude, events, events::EventSender, git, prompt, run_record, state, verifier};
-
-/// Returns (completed: bool, blocked: bool) for TUI signaling
-pub fn run_next(project_state: &state::ProjectState, sender: Option<&EventSender>) -> Result<(bool, bool)> {
-    match project_state.next_pending_step() {
-        Some((phase_id, track_id, step_id)) => {
-            events::emit(sender, &format!("Executing {}/{}/{}...", phase_id, track_id, step_id));
-            run_step(project_state, &phase_id, &track_id, &step_id, sender, None)?;
-            if let Some(tx) = sender { let _ = tx.send(events::ProgressEvent::PhaseLabel { label: "── verify ──".into(), track_id: None }); }
-            let verify_passed = match verifier::run_step(project_state, &phase_id, &track_id, &step_id, sender) {
-                Ok(()) => true,
-                Err(e) => {
-                    events::emit(sender, &format!("Verification failed: {}", e));
-                    false
-                }
-            };
-            if verify_passed {
-                state::mark_step_complete(&phase_id, &track_id, &step_id)?;
-                events::emit(sender, "Step complete.");
-                Ok((true, false))
-            } else {
-                events::emit(sender, "Step verification failed — marking blocked.");
-                state::mark_step_blocked(&phase_id, &track_id, &step_id, "Verification failed")?;
-                Ok((false, true))
-            }
-        }
-        None => {
-            events::emit(sender, "No pending steps.");
-            Ok((false, false))
-        }
-    }
-}
+use crate::{claude, config, events, events::EventSender, git, prompt, run_record, state, step_context};
 
 pub fn run_step(
     project_state: &state::ProjectState,
@@ -46,10 +15,14 @@ pub fn run_step(
 ) -> Result<()> {
     state::mark_step_in_progress(phase_id, track_id, step_id)?;
 
-    // When running in a worktree, the branch is already checked out there.
-    // For serial execution (worktree_dir == None), switch to the track branch as before.
+    // run_step requires a worktree. The legacy serial path that mutated the
+    // main repo's HEAD via `git checkout -b mz/...` was removed because it
+    // corrupted the main repo and broke subsequent parallel runs. All callers
+    // must now create a worktree via `git::ensure_worktree` and pass it here.
     if worktree_dir.is_none() {
-        git::create_track_branch(phase_id, track_id)?;
+        anyhow::bail!(
+            "run_step requires a worktree_dir; callers must use git::ensure_worktree"
+        );
     }
 
     // Prepare log file (truncate/create fresh for this step execution)
@@ -67,11 +40,31 @@ pub fn run_step(
         append_to_log(&log_path, "--- track planning ---\n", &output);
     }
 
-    // Gather context
+    // Gather context. The step plan may carry an optional `context:` YAML
+    // frontmatter block (`step_context::parse`) telling us which prior
+    // summaries and extra files to include — we honor it when present and
+    // fall back to "include everything" defaults otherwise.
+    //
+    // The render order below is intentional and load-bearing for prompt
+    // caching: project_md → decisions → context → dep_summaries →
+    // extra_files → step_plan. The first three are byte-stable across
+    // every step in a phase, which lets Claude Code's CLI cache the prefix
+    // (system prompt + cacheable user-prompt header) once per phase
+    // instead of re-tokenizing it for each step. Don't reorder these
+    // without thinking about cache hit rates.
     let project_md = state::read_project_md()?;
     let decisions = state::read_decisions()?;
-    let step_plan = state::read_step_plan(phase_id, track_id, step_id)?;
-    let dep_summaries = state::collect_dependency_summaries(project_state, phase_id, track_id, step_id)?;
+    let raw_step_plan = state::read_step_plan(phase_id, track_id, step_id)?;
+    let plan_spec = step_context::parse(&raw_step_plan);
+    let step_plan = step_context::strip_frontmatter(&raw_step_plan).to_string();
+    let dep_summaries = state::collect_dependency_summaries_with_spec(
+        project_state,
+        phase_id,
+        track_id,
+        step_id,
+        &plan_spec,
+    )?;
+    let extra_files = state::read_extra_files(&plan_spec);
     let context = state::read_context(phase_id)?;
 
     let mut vars = prompt::vars();
@@ -80,6 +73,7 @@ pub fn run_step(
     prompt::set(&mut vars, "context", &context);
     prompt::set(&mut vars, "step_plan", &step_plan);
     prompt::set(&mut vars, "dependency_summaries", &dep_summaries);
+    prompt::set(&mut vars, "extra_files", &extra_files);
     prompt::set(&mut vars, "phase_id", phase_id);
     prompt::set(&mut vars, "track_id", track_id);
     prompt::set(&mut vars, "step_id", step_id);
@@ -108,8 +102,9 @@ pub fn run_step(
     // NOTE: State file reads (read_step_plan, read_context, etc.) use relative `.mz/` paths and
     // must be called from the main repo root. This works because the orchestrator's CWD never
     // changes — only the Claude subprocess CWD is set to the worktree via opts.cwd().
+    let cfg = config::current();
     let mut opts = claude::ClaudeOptions::new(rendered)
-        .model("sonnet")
+        .model(&cfg.models.execute)
         .max_turns(50)
         .system_prompt(&sys_prompt);
     if let Some(dir) = worktree_dir {
@@ -239,8 +234,9 @@ fn plan_track(
         phase_id, track_id, track_plan_path.display()
     );
 
+    let cfg = config::current();
     let mut opts = claude::ClaudeOptions::new(rendered)
-        .model("opus")
+        .model(&cfg.models.plan_track)
         .max_turns(30)
         .system_prompt(&sys_prompt);
     if let Some(dir) = worktree_dir {
@@ -312,8 +308,9 @@ fn summarize_step(phase_id: &str, track_id: &str, step_id: &str, sender: Option<
         summary_path.display()
     );
 
+    let cfg = config::current();
     let mut opts = claude::ClaudeOptions::new(rendered)
-        .model("sonnet")
+        .model(&cfg.models.summarize)
         .max_turns(20)
         .system_prompt(&sys_prompt);
     if let Some(dir) = worktree_dir {
@@ -376,5 +373,233 @@ fn append_to_log(log_path: &std::path::Path, header: &str, content: &str) {
     let _ = file.write_all(content.as_bytes());
     if !content.ends_with('\n') {
         let _ = writeln!(file);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{PhaseEntry, ProjectState, StepEntry, StepStatus, TrackEntry};
+    use std::process::Command as StdCommand;
+
+    fn mock_claude_binary() -> std::path::PathBuf {
+        let mut p = std::env::current_exe().expect("current_exe");
+        p.pop(); // deps/
+        p.pop(); // <profile>/
+        p.push("mock_claude");
+        if !p.exists() {
+            panic!("mock_claude binary not found at {}", p.display());
+        }
+        p
+    }
+
+    struct TempMz {
+        dir: tempfile::TempDir,
+    }
+
+    impl TempMz {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let mz_path = dir.path().join(".mz");
+            std::fs::create_dir_all(&mz_path).unwrap();
+            crate::state::set_test_mz_dir(Some(mz_path.clone()));
+            crate::run_record::set_test_mz_dir(Some(mz_path));
+            TempMz { dir }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            self.dir.path()
+        }
+    }
+
+    impl Drop for TempMz {
+        fn drop(&mut self) {
+            crate::state::set_test_mz_dir(None);
+            crate::run_record::set_test_mz_dir(None);
+        }
+    }
+
+    fn git_init(dir: &std::path::Path) {
+        let run = |args: &[&str]| {
+            let out = StdCommand::new("git")
+                .args(args)
+                .current_dir(dir)
+                .output()
+                .expect("spawn git");
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "Test"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        // Initial commit so HEAD exists
+        std::fs::write(dir.join("seed.txt"), "seed\n").unwrap();
+        run(&["add", "seed.txt"]);
+        run(&["commit", "-q", "-m", "seed"]);
+    }
+
+    fn make_two_step_state() -> ProjectState {
+        // ST01 already Complete, ST02 Pending — so is_first_step_of_track returns
+        // false for ST02 and run_step skips the plan_track call.
+        ProjectState {
+            name: "test".to_string(),
+            description: "".to_string(),
+            current_phase: "P001".to_string(),
+            phases: vec![PhaseEntry {
+                id: "P001".to_string(),
+                title: "Phase 1".to_string(),
+                tracks: vec![TrackEntry {
+                    id: "TR01".to_string(),
+                    title: "Track 1".to_string(),
+                    depends_on: vec![],
+                    steps: vec![
+                        StepEntry {
+                            id: "ST01".to_string(),
+                            title: "Step 1".to_string(),
+                            status: StepStatus::Complete,
+                            blocked_reason: None,
+                            attempts: 1,
+                        },
+                        StepEntry {
+                            id: "ST02".to_string(),
+                            title: "Step 2".to_string(),
+                            status: StepStatus::Pending,
+                            blocked_reason: None,
+                            attempts: 0,
+                        },
+                    ],
+                }],
+            }],
+        }
+    }
+
+    fn write_minimal_inputs(state: &ProjectState) {
+        // PROJECT.md is required by run_step
+        let project_md_path = crate::state::mz_root().join("PROJECT.md");
+        std::fs::write(&project_md_path, "# Test project\n").unwrap();
+        // state.yaml so mark_step_in_progress can mutate it
+        crate::state::save(state).unwrap();
+        // ST02 PLAN.md (required)
+        let plan_path = crate::state::step_plan_path("P001", "TR01", "ST02");
+        std::fs::create_dir_all(plan_path.parent().unwrap()).unwrap();
+        std::fs::write(&plan_path, "## Plan\nDo step 2.").unwrap();
+    }
+
+    #[test]
+    fn test_run_step_requires_worktree_dir() {
+        let _env = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _tmp = TempMz::new();
+        let state = make_two_step_state();
+        write_minimal_inputs(&state);
+        // No worktree_dir → should bail immediately
+        let result = run_step(&state, "P001", "TR01", "ST02", None, None);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("worktree_dir"), "got: {}", msg);
+    }
+
+    #[test]
+    fn test_run_step_end_to_end_with_mock() {
+        let _env = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempMz::new();
+        let state = make_two_step_state();
+        write_minimal_inputs(&state);
+        git_init(tmp.path());
+
+        // Make the mock binary write a summary file as a side effect, so the
+        // commit step has something real to add.
+        let summary_path = crate::state::step_summary_path("P001", "TR01", "ST02");
+        std::env::set_var("MZ_CLAUDE_BINARY", mock_claude_binary());
+        std::env::set_var("MOCK_CLAUDE_TEXT", "executing step 2");
+        std::env::set_var("MOCK_CLAUDE_RESULT", "step 2 done");
+        std::env::set_var("MOCK_CLAUDE_WRITE_PATH", summary_path.display().to_string());
+        std::env::set_var("MOCK_CLAUDE_WRITE_BODY", "## What was done\nStep 2 implemented.\n");
+        std::env::remove_var("MOCK_CLAUDE_MODE");
+
+        let result = run_step(&state, "P001", "TR01", "ST02", None, Some(tmp.path()));
+
+        std::env::remove_var("MZ_CLAUDE_BINARY");
+        std::env::remove_var("MOCK_CLAUDE_TEXT");
+        std::env::remove_var("MOCK_CLAUDE_RESULT");
+        std::env::remove_var("MOCK_CLAUDE_WRITE_PATH");
+        std::env::remove_var("MOCK_CLAUDE_WRITE_BODY");
+
+        assert!(
+            result.is_ok(),
+            "run_step should succeed with mock: {:?}",
+            result.err()
+        );
+
+        // Side-effect assertions:
+        // 1. mark_step_in_progress flipped ST02 → InProgress on disk
+        let on_disk = crate::state::load().unwrap();
+        let st02_status = on_disk
+            .phases
+            .iter()
+            .find(|p| p.id == "P001")
+            .unwrap()
+            .tracks
+            .iter()
+            .find(|t| t.id == "TR01")
+            .unwrap()
+            .steps
+            .iter()
+            .find(|s| s.id == "ST02")
+            .unwrap()
+            .status
+            .clone();
+        assert_eq!(st02_status, StepStatus::InProgress);
+
+        // 2. The mock-written summary survived (commit_step did NOT clobber it)
+        assert!(summary_path.exists(), "summary file should exist");
+
+        // 3. The output log was created and contains both header sections
+        let log_path = crate::state::step_output_log_path("P001", "TR01", "ST02");
+        assert!(log_path.exists(), "output log should exist");
+        let log = std::fs::read_to_string(&log_path).unwrap();
+        assert!(log.contains("step execution"), "log should contain execution header");
+        assert!(log.contains("summarization"), "log should contain summarization header");
+
+        // 4. run records were appended (execute + summarize stages)
+        let records = crate::run_record::load_all().unwrap_or_default();
+        let stages: Vec<_> = records
+            .iter()
+            .filter(|r| r.step_id == "ST02")
+            .map(|r| r.stage.as_str())
+            .collect();
+        assert!(stages.contains(&"execute"), "expected execute record, got {:?}", stages);
+        assert!(stages.contains(&"summarize"), "expected summarize record, got {:?}", stages);
+    }
+
+    #[test]
+    fn test_run_step_propagates_mock_failure() {
+        let _env = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = TempMz::new();
+        let state = make_two_step_state();
+        write_minimal_inputs(&state);
+        git_init(tmp.path());
+
+        std::env::set_var("MZ_CLAUDE_BINARY", mock_claude_binary());
+        std::env::set_var("MOCK_CLAUDE_MODE", "exit_nonzero");
+        std::env::set_var("MOCK_CLAUDE_STDERR", "mock failure for test");
+
+        let result = run_step(&state, "P001", "TR01", "ST02", None, Some(tmp.path()));
+
+        std::env::remove_var("MZ_CLAUDE_BINARY");
+        std::env::remove_var("MOCK_CLAUDE_MODE");
+        std::env::remove_var("MOCK_CLAUDE_STDERR");
+
+        assert!(result.is_err(), "run_step should fail when mock exits nonzero");
+        // Even on failure, an error run record should have been logged
+        let records = crate::run_record::load_all().unwrap_or_default();
+        let has_error = records
+            .iter()
+            .any(|r| r.step_id == "ST02" && r.outcome == "error");
+        assert!(has_error, "an error run record should have been appended");
     }
 }

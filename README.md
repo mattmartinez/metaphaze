@@ -135,13 +135,13 @@ Planning and verification use Opus (deep reasoning). Step execution uses Sonnet 
 
 ## Status
 
-Early development. The core loop works. Planned additions:
+The core loop works and the foundational features below are implemented:
 
-- [ ] Parallel track execution via git worktrees
-- [ ] `--max-budget-usd` cost ceiling
-- [ ] Stuck detection (loop detection in state transitions)
-- [ ] Crash recovery with auto-restart
-- [ ] `mz log` for execution history
+- [x] Parallel track execution via git worktrees
+- [x] `--max-budget-usd` cost ceiling
+- [x] Stuck detection (loop detection in state transitions)
+- [x] Crash recovery with auto-restart
+- [x] `mz log` for execution history
 
 ## License
 

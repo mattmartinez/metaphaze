@@ -623,6 +623,33 @@ pub fn reset_blocked_steps(phase_id: &str) -> Result<()> {
     save(&state)
 }
 
+/// Revert any `InProgress` steps in `phase_id` back to `Pending`. Used at
+/// `mz auto` / `mz next` startup to clean up zombie state left behind by a
+/// prior crashed or killed run. Returns the list of `(track_id, step_id)` pairs
+/// that were reaped, so callers can log them.
+pub fn reap_stale_in_progress(phase_id: &str) -> Result<Vec<(String, String)>> {
+    let mut state = load()?;
+    let mut reaped = Vec::new();
+    for ph in &mut state.phases {
+        if ph.id != phase_id {
+            continue;
+        }
+        for track in &mut ph.tracks {
+            for step in &mut track.steps {
+                if step.status == StepStatus::InProgress {
+                    reaped.push((track.id.clone(), step.id.clone()));
+                    step.status = StepStatus::Pending;
+                    // Preserve attempts so the retry counter survives the reap.
+                }
+            }
+        }
+    }
+    if !reaped.is_empty() {
+        save(&state)?;
+    }
+    Ok(reaped)
+}
+
 pub fn increment_step_attempts(phase_id: &str, track_id: &str, step_id: &str) -> Result<()> {
     let mut state = load()?;
     for ph in &mut state.phases {
@@ -789,6 +816,128 @@ pub fn read_step_summary(phase_id: &str, track_id: &str, step_id: &str) -> Resul
     }
 }
 
+/// Filtered variant of `collect_dependency_summaries` that honors a
+/// per-step `StepContextSpec`. Backwards-compatible: if `spec.is_empty()`
+/// the result is identical to `collect_dependency_summaries`.
+///
+/// Filtering rules:
+///   * If `spec.exclude_default_summaries` is true, the default
+///     dependency-track + within-track collection is skipped entirely.
+///   * If `spec.include_summaries` contains explicit `TR/ST` pairs, those
+///     summaries are appended (in the order listed) under a dedicated
+///     "From explicit allow-list" heading.
+///
+/// Unknown / mistyped summary refs are silently dropped — a typo in a
+/// step plan must never block execution.
+pub fn collect_dependency_summaries_with_spec(
+    state: &ProjectState,
+    phase_id: &str,
+    track_id: &str,
+    step_id: &str,
+    spec: &crate::step_context::StepContextSpec,
+) -> Result<String> {
+    let mut result = String::new();
+
+    if !spec.exclude_default_summaries {
+        let default_block = collect_dependency_summaries(state, phase_id, track_id, step_id)?;
+        result.push_str(&default_block);
+    }
+
+    if !spec.include_summaries.is_empty() {
+        let mut explicit_block = String::new();
+        for entry in &spec.include_summaries {
+            // Each entry is "TRxx/STxx". Anything else is silently skipped.
+            let Some((tr_id, st_id)) = entry.split_once('/') else {
+                continue;
+            };
+            let tr_id = tr_id.trim();
+            let st_id = st_id.trim();
+            if tr_id.is_empty() || st_id.is_empty() {
+                continue;
+            }
+            let summary = match read_step_summary(phase_id, tr_id, st_id) {
+                Ok(s) if !s.is_empty() => s,
+                _ => continue,
+            };
+            // Look up the step's title for a friendlier heading.
+            let title = state
+                .phases
+                .iter()
+                .find(|ph| ph.id == phase_id)
+                .and_then(|ph| ph.tracks.iter().find(|t| t.id == tr_id))
+                .and_then(|t| t.steps.iter().find(|s| s.id == st_id))
+                .map(|s| s.title.clone())
+                .unwrap_or_else(|| st_id.to_string());
+            explicit_block.push_str(&format!(
+                "\n### {}/{} — {}\n\n{}\n",
+                tr_id, st_id, title, summary
+            ));
+        }
+        if !explicit_block.is_empty() {
+            if !result.is_empty() {
+                result.push('\n');
+            }
+            result.push_str("## From explicit allow-list\n");
+            result.push_str(&explicit_block);
+        }
+    }
+
+    Ok(result)
+}
+
+/// Read each repo-relative file path from a `StepContextSpec` and return
+/// a single concatenated markdown block ready to inject into a prompt
+/// template. Missing/unreadable files are silently skipped (a typo in a
+/// plan must never block a step). Returns an empty string when the spec
+/// has no `include_files`.
+pub fn read_extra_files(spec: &crate::step_context::StepContextSpec) -> String {
+    if spec.include_files.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for path in &spec.include_files {
+        let p = std::path::Path::new(path);
+        let body = match fs::read_to_string(p) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        // Pick a fenced-code language from the extension so the model
+        // gets syntax cues for the file. Markdown gets no fence at all
+        // (it'd just nest awkwardly).
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let lang = match ext {
+            "rs" => "rust",
+            "ts" | "tsx" => "ts",
+            "js" | "jsx" => "js",
+            "py" => "python",
+            "go" => "go",
+            "yaml" | "yml" => "yaml",
+            "toml" => "toml",
+            "json" => "json",
+            "sh" | "bash" => "bash",
+            "md" | "markdown" => "",
+            _ => "",
+        };
+        out.push_str(&format!("\n### {}\n\n", path));
+        if lang.is_empty() {
+            out.push_str(&body);
+            if !body.ends_with('\n') {
+                out.push('\n');
+            }
+        } else {
+            out.push_str(&format!("```{}\n{}", lang, body));
+            if !body.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("```\n");
+        }
+    }
+    out
+}
+
 pub fn collect_dependency_summaries(
     state: &ProjectState,
     phase_id: &str,
@@ -871,6 +1020,13 @@ pub fn collect_dependency_summaries(
 pub(crate) fn set_test_mz_dir(path: Option<std::path::PathBuf>) {
     TEST_MZ_DIR.with(|d| *d.borrow_mut() = path);
 }
+
+/// A process-wide mutex used by tests that mutate global process state
+/// (current_dir, environment variables, the run_record ledger). Acquiring it
+/// at the top of such a test prevents the parallel-test scheduler from
+/// interleaving conflicting global state changes.
+#[cfg(test)]
+pub(crate) static TEST_PROCESS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod tests {

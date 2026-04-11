@@ -18,6 +18,10 @@ You are an expert software engineer. Execute the step below. Focus ONLY on what 
 
 {{dependency_summaries}}
 
+## Additional Reference Material
+
+{{extra_files}}
+
 ## Your Step
 
 {{step_plan}}

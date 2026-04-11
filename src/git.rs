@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::state;
+use crate::{config, state};
 
 #[allow(dead_code)]
 pub fn current_branch() -> Result<String> {
@@ -50,25 +50,6 @@ fn default_branch() -> Result<String> {
     }
 
     Ok("main".to_string())
-}
-
-pub fn create_track_branch(phase_id: &str, track_id: &str) -> Result<()> {
-    let branch = format!("mz/{}/{}", phase_id, track_id);
-    let output = Command::new("git")
-        .args(["checkout", "-b", &branch])
-        .output()
-        .context("Failed to create branch")?;
-    if !output.status.success() {
-        let output = Command::new("git")
-            .args(["checkout", &branch])
-            .output()
-            .context("Failed to checkout branch")?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            bail!("Failed to checkout branch {}: {}", branch, stderr);
-        }
-    }
-    Ok(())
 }
 
 pub fn commit_step(phase_id: &str, track_id: &str, step_id: &str, title: &str, cwd: Option<&Path>) -> Result<()> {
@@ -142,14 +123,11 @@ pub fn merge_track(phase_id: &str, track_id: &str, worktree_path: Option<&Path>)
         bail!("Failed to checkout {}: {}", default, stderr);
     }
 
-    let output = Command::new("git")
-        .args(["merge", "--squash", &branch])
-        .output()
-        .context("Failed to squash merge")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Merge failed: {}", stderr);
-    }
+    // The merge command depends on the configured strategy:
+    //   squash → `git merge --squash <branch>` followed by an explicit commit.
+    //   no-ff  → `git merge --no-ff -m <message> <branch>` (single combined op)
+    let cfg = config::current();
+    let strategy = cfg.git.strategy();
 
     let subject = format!("{}/{}: {}", phase_id, track_id, track_title);
     let body = if step_bullets.is_empty() {
@@ -159,13 +137,39 @@ pub fn merge_track(phase_id: &str, track_id: &str, worktree_path: Option<&Path>)
     };
     let message = format!("{}{}", subject, body);
 
-    let output = Command::new("git")
-        .args(["commit", "-m", &message])
-        .output()
-        .context("Failed to commit merge")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Merge commit failed: {}", stderr);
+    match strategy {
+        config::MergeStrategy::Squash => {
+            let output = Command::new("git")
+                .args(["merge", "--squash", &branch])
+                .output()
+                .context("Failed to squash merge")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("Merge failed: {}", stderr);
+            }
+
+            let output = Command::new("git")
+                .args(["commit", "-m", &message])
+                .output()
+                .context("Failed to commit merge")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("Merge commit failed: {}", stderr);
+            }
+        }
+        config::MergeStrategy::NoFf => {
+            // --no-ff produces a real merge commit with the branch's history
+            // intact. -m supplies the merge commit message in one shot, so we
+            // don't need a separate `git commit` call.
+            let output = Command::new("git")
+                .args(["merge", "--no-ff", "-m", &message, &branch])
+                .output()
+                .context("Failed to no-ff merge")?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                bail!("Merge failed: {}", stderr);
+            }
+        }
     }
 
     Ok(())
@@ -263,6 +267,39 @@ pub fn create_worktree(phase_id: &str, track_id: &str) -> Result<PathBuf> {
     Ok(worktree_path)
 }
 
+/// Ensure a worktree exists for the given phase/track. Reuses an existing worktree
+/// at `.mz/worktrees/{phase_id}/{track_id}` if one is registered, otherwise prunes
+/// stale worktree metadata and creates a fresh one. Returns the absolute path.
+///
+/// This is the safe entry point for callers (both serial and parallel paths)
+/// that need a worktree to run a step in. Unlike `create_worktree`, it never
+/// fails when called repeatedly for the same track.
+pub fn ensure_worktree(phase_id: &str, track_id: &str) -> Result<PathBuf> {
+    let root = repo_root()?;
+    let rel_path = format!(".mz/worktrees/{}/{}", phase_id, track_id);
+    let worktree_path = root.join(&rel_path);
+
+    // If git already knows about this worktree, reuse it.
+    if let Ok(existing) = list_worktrees() {
+        let target = worktree_path.to_string_lossy().to_string();
+        if existing.iter().any(|p| p == &target) {
+            return Ok(worktree_path);
+        }
+    }
+
+    // Not registered. Prune stale metadata in case a previous worktree dir was
+    // removed without `git worktree remove`, then create fresh.
+    let _ = Command::new("git").args(["worktree", "prune"]).output();
+
+    // If a stale directory exists at the path with no git registration, remove it
+    // so `git worktree add` can succeed.
+    if worktree_path.exists() {
+        let _ = std::fs::remove_dir_all(&worktree_path);
+    }
+
+    create_worktree(phase_id, track_id)
+}
+
 /// Remove a git worktree at the given path.
 /// Uses `--force` and ignores errors if the worktree is already gone.
 pub fn remove_worktree(worktree_path: &Path) -> Result<()> {
@@ -330,10 +367,6 @@ fn extract_what_was_done(summary: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::process::Command;
-    use std::sync::Mutex;
-
-    /// Global mutex to serialize tests that modify the process CWD.
-    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     /// Set up a temporary git repository with an initial commit.
     fn init_temp_repo() -> tempfile::TempDir {
@@ -367,7 +400,7 @@ mod tests {
 
     #[test]
     fn test_worktree_create_remove_list() {
-        let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = init_temp_repo();
         let p = dir.path();
 
@@ -426,7 +459,7 @@ mod tests {
     /// Git log (most-recent-first) should show TR02 merge before TR01 merge.
     #[test]
     fn test_merge_track_ordered() {
-        let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = init_temp_repo();
         let p = dir.path();
         let original_dir = std::env::current_dir().unwrap();
@@ -520,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_remove_worktree_already_gone() {
-        let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // remove_worktree on a non-existent path should not error.
         let dir = init_temp_repo();
         let p = dir.path();
@@ -537,7 +570,7 @@ mod tests {
     /// Create a worktree, verify the directory exists, remove it, verify it's gone.
     #[test]
     fn test_worktree_create_remove_cycle() {
-        let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = init_temp_repo();
         let p = dir.path();
         let original_dir = std::env::current_dir().unwrap();
@@ -555,7 +588,7 @@ mod tests {
     /// Create a worktree, remove it (keeps the branch), then re-add without -b.
     #[test]
     fn test_worktree_branch_already_exists() {
-        let _lock = CWD_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::state::TEST_PROCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = init_temp_repo();
         let p = dir.path();
         let original_dir = std::env::current_dir().unwrap();

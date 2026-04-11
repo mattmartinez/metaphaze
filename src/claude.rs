@@ -23,7 +23,6 @@ fn stream_debug_log(msg: &str) {
 pub struct RunResult {
     pub output: String,
     pub cost_usd: Option<f64>,
-    pub duration_ms: Option<u64>,
     pub num_turns: Option<u32>,
     pub model: String,
     pub wall_clock_ms: u64,
@@ -35,7 +34,6 @@ pub struct ClaudeOptions {
     pub prompt: String,
     pub model: Option<String>,
     pub max_turns: Option<u32>,
-    pub allowed_tools: Vec<String>,
     pub append_system_prompt: Option<String>,
     pub cwd: Option<PathBuf>,
 }
@@ -46,7 +44,6 @@ impl ClaudeOptions {
             prompt,
             model: None,
             max_turns: Some(50),
-            allowed_tools: vec![],
             append_system_prompt: None,
             cwd: None,
         }
@@ -96,10 +93,6 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
         cmd.arg("--append-system-prompt").arg(sys);
     }
 
-    for tool in &opts.allowed_tools {
-        cmd.arg("--allowedTools").arg(tool);
-    }
-
     if let Some(ref dir) = opts.cwd {
         cmd.current_dir(dir);
     }
@@ -143,7 +136,6 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
     let mut last_tool_summary: Option<String> = None;
     let mut detected_model = String::new();
     let mut run_cost: Option<f64> = None;
-    let mut run_duration: Option<u64> = None;
     let mut run_turns: Option<u32> = None;
     let mut run_input_tokens: Option<u64> = None;
     let mut run_output_tokens: Option<u64> = None;
@@ -257,10 +249,9 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
                             eprintln!("  {} {}", "✓".dimmed(), result_tool.dimmed());
                         }
                     }
-                    Some(StreamEvent::Result { result, cost_usd, duration_ms, num_turns, input_tokens, output_tokens }) => {
+                    Some(StreamEvent::Result { result, cost_usd, num_turns, input_tokens, output_tokens }) => {
                         dbg_other_parsed += 1;
                         run_cost = cost_usd;
-                        run_duration = duration_ms;
                         run_turns = num_turns;
                         // Prefer Result-level token counts; they'll override MessageStart values
                         if input_tokens.is_some() {
@@ -359,7 +350,6 @@ pub fn run(opts: ClaudeOptions, sender: Option<&EventSender>) -> Result<RunResul
     Ok(RunResult {
         output: stdout,
         cost_usd: run_cost,
-        duration_ms: run_duration,
         num_turns: run_turns,
         model: detected_model,
         wall_clock_ms: start.elapsed().as_millis() as u64,
@@ -396,6 +386,12 @@ pub fn run_interactive(system_prompt: &str, initial_prompt: &str) -> Result<()> 
 }
 
 fn find_claude() -> Result<String> {
+    // Test/dev override: MZ_CLAUDE_BINARY points at a specific binary (used by the mock harness).
+    if let Ok(p) = std::env::var("MZ_CLAUDE_BINARY") {
+        if !p.is_empty() {
+            return Ok(p);
+        }
+    }
     // Find all `claude` binaries in PATH via `which -a`
     let output = Command::new("which").arg("-a").arg("claude").output()?;
     if output.status.success() {
